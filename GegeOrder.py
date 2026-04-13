@@ -9,7 +9,7 @@ import asyncio
 import config
 from driver_manager import get_driver
 from order_queue import queue_eldo, queue_g2g, process_worker_eldo, process_worker_g2g, DeliveryView
-from order_scanner import OrderScanner, format_order_message, send_discord_webhook
+from order_scanner import OrderScanner, format_order_message, send_discord_webhook, shutdown_executor
 
 # ==========================================
 # KHỞI TẠO 4 TRÌNH DUYỆT (2 Scanner + 2 Worker)
@@ -409,6 +409,7 @@ if __name__ == "__main__":
     finally:
         # Đóng tất cả 4 drivers
         print("🔒 Đang đóng 4 Chrome drivers...")
+        shutdown_executor()
         try:
             driver_eldo_worker.quit()
             driver_g2g_worker.quit()

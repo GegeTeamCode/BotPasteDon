@@ -18,6 +18,11 @@ from selenium.webdriver.support import expected_conditions as EC
 # Thread pool cho Selenium operations (tránh block Discord event loop)
 _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="selenium_")
 
+def shutdown_executor():
+    """Dọn dẹp thread pool khi bot dừng"""
+    _executor.shutdown(wait=True)
+    print("✅ Đã shutdown Selenium thread pool")
+
 # ==========================================
 # CẤU HÌNH MẶC ĐỊNH
 # ==========================================
@@ -805,10 +810,11 @@ class OrderScanner:
                 try:
                     data = self._extract_eldorado_data_from_page()
 
-                    # Kiểm tra đã có game chưa
+                    # Kiểm tra đã có đủ game và itemName chưa
                     has_game = data.get('game') and data['game'] not in ['N/A', '']
+                    has_item = data.get('itemName') and data['itemName'] not in ['Unknown Item', '']
 
-                    if has_game:
+                    if has_game and has_item:
                         log(self.platform_display, f"✅ Eldorado Data Ready (attempt {attempt + 1})")
                         return data
 
@@ -995,27 +1001,25 @@ def format_order_message(order_data: dict, show_labels: bool = False) -> str:
     """
     lines = []
 
-    # Order ID với link (dùng <> để Discord không hiện embed preview)
-    if order_data.get('orderId'):
-        url = order_data.get('url', '')
-        if url:
-            # Format: [ORDER_ID](<URL>) - <> ngăn Discord tạo embed preview
-            lines.append(f"[{order_data['orderId']}](<{url}>)")
-        else:
-            lines.append(f"{order_data['orderId']}")
-
-    # Platform + Customer (⚡ cho Eldorado, không icon cho G2G)
+    # Platform + Customer (đưa lên đầu, bold để nổi bật)
     meta = []
     if order_data.get('platform'):
         platform = order_data['platform']
-        # Thêm ⚡ cho Eldorado
         if platform.lower() == 'eldorado':
             platform = f"⚡ {platform}"
         meta.append(platform)
     if order_data.get('customerName'):
         meta.append(order_data['customerName'])
     if meta:
-        lines.append(" | ".join(meta))
+        lines.append(f"**{' | '.join(meta)}**")
+
+    # Order ID với link
+    if order_data.get('orderId'):
+        url = order_data.get('url', '')
+        if url:
+            lines.append(f"[{order_data['orderId']}](<{url}>)")
+        else:
+            lines.append(f"{order_data['orderId']}")
 
     # Item + Quantity (không emoji, không label)
     item_info = []
