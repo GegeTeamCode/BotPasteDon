@@ -346,17 +346,20 @@ async def handle_g2g(driver, url, qty, file_paths, order_id: str = ""):
 
     try:
         inp = wait.until(EC.presence_of_element_located((By.XPATH, "//input[@data-attr='order-item-add-delivered-qty-input']")))
-        driver.execute_script(f"arguments[0].value = '{qty}';", inp)
-        driver.execute_script("arguments[0].dispatchEvent(new Event('input'));", inp)
+        inp.click()
+        inp.clear()
+        inp.send_keys(qty)
         log("G2G", order_id, f"📝 Đã nhập số lượng: {qty}")
-    except: pass
+    except Exception as e:
+        log("G2G", order_id, f"⚠️ Lỗi nhập số lượng: {e}")
 
     try:
         btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@data-attr='order-item-add-delivered-qty-submit-btn']")))
         driver.execute_script("arguments[0].click();", btn)
         log("G2G", order_id, "🖱️ Clicked nút submit qty")
         await asyncio.sleep(2)
-    except: pass
+    except Exception as e:
+        log("G2G", order_id, f"⚠️ Lỗi submit số lượng: {e}")
 
     try:
         driver.execute_script("arguments[0].click();", wait.until(EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), 'Proof gallery')]"))))
