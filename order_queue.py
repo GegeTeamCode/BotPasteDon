@@ -353,11 +353,27 @@ async def handle_g2g(driver, url, qty, file_paths, order_id: str = ""):
     except Exception as e:
         log("G2G", order_id, f"⚠️ Lỗi nhập số lượng: {e}")
 
+    # Kiểm tra có báo cáo cancel không (trước khi submit)
+    has_cancel_report = bool(driver.find_elements(By.CSS_SELECTOR, "div.g-alert-box.bg-negative"))
+    if has_cancel_report:
+        log("G2G", order_id, "⚠️ Phát hiện Report cancel trên đơn hàng")
+
     try:
         btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[@data-attr='order-item-add-delivered-qty-submit-btn']")))
         driver.execute_script("arguments[0].click();", btn)
         log("G2G", order_id, "🖱️ Clicked nút submit qty")
         await asyncio.sleep(2)
+
+        # Chỉ chờ overlay khi có cancel report
+        if has_cancel_report:
+            for _ in range(10):
+                overlay_btns = driver.find_elements(By.XPATH, "//button[contains(., 'Continue') and contains(@class, 'bg-primary')]")
+                if overlay_btns and overlay_btns[0].is_displayed():
+                    driver.execute_script("arguments[0].click();", overlay_btns[0])
+                    log("G2G", order_id, "✅ Clicked Continue trên overlay open case")
+                    await asyncio.sleep(2)
+                    break
+                await asyncio.sleep(0.5)
     except Exception as e:
         log("G2G", order_id, f"⚠️ Lỗi submit số lượng: {e}")
 
