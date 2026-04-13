@@ -1,0 +1,9 @@
+# Core dependencies
+discord.py>=2.3.2
+selenium>=4.15.0
+webdriver-manager>=4.0.1
+aiohttp>=3.9.0
+websockets
+
+# Optional but recommended
+#requests>=2.0.0  0# For HTTP requests to external APIs

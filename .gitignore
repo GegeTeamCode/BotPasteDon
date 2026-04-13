@@ -1,0 +1,26 @@
+# Thư mục không cần push
+__pycache__/
+cache/
+chrome_profile_eldo_scanner/
+chrome_profile_eldo_worker/
+chrome_profile_g2g_scanner/
+chrome_profile_g2g_worker/
+proofs/
+venv/
+
+# File tạm Python
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+.env
+.env.local

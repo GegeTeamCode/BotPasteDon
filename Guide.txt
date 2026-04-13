@@ -1,0 +1,69 @@
+⚙️ Cài đặt
+1. Yêu cầu hệ thống
+    - Python 3.10 trở lên.
+    - Google Chrome (Phiên bản mới nhất).
+    - Mạng internet ổn định.
+
+2. Cài đặt thư viện
+    - Mở Terminal hoặc PowerShell tại thư mục dự án và chạy lệnh sau:
+
+    <Bash>
+    pip install -r requirements.txt
+
+3. Cấu hình Bot
+    - Tạo file config.py (nếu chưa có) và điền thông tin Token và ID kênh Discord:
+
+    <Python>
+    # config.py
+        BOT_TOKEN = "YOUR_DISCORD_BOT_TOKEN_HERE"
+        CHANNEL_IDS = [123456789012345678, 987654321098765432] # ID các kênh Bot hoạt động
+
+4. Cấu hình nội dung chat (Tùy chọn)
+    - Tạo file message.txt và nhập nội dung bạn muốn Bot tự động chat với khách hàng sau khi giao xong:
+
+    <Plaintext>
+        Order delivered. Thanks for your purchase!
+        Please confirm and leave a review. Have a nice day!
+
+🌐 Chuẩn bị Profile Chrome (Quan trọng)
+    Hệ thống sử dụng 2 profile riêng biệt để tránh xung đột session:
+        1. Eldorado (chrome_profile):
+            - Đây là profile chính. Bạn cần đảm bảo thư mục này đã chứa Cookies đăng nhập của Eldorado.
+            - Nếu chưa có, hãy chạy code, đợi trình duyệt Eldorado mở lên và đăng nhập thủ công, sau đó tắt đi bật lại.
+
+        2. G2G (chrome_profile_g2g):
+            - Lần đầu tiên chạy Bot, thư mục này sẽ tự động được tạo ra.
+            - Cửa sổ Chrome thứ 2 sẽ hiện ra (trống trơn). Bạn cần đăng nhập G2G thủ công vào cửa sổ này 1 lần duy nhất. Các lần sau Bot sẽ tự nhớ.
+
+🚀 Cách chạy Bot
+    Mở Terminal/PowerShell và chạy lệnh:
+
+    <Bash>
+    python gegeorder.py
+
+    - Lúc này sẽ có 2 cửa sổ Chrome hiện lên (1 cho Eldorado, 1 cho G2G).
+    - LƯU Ý: Không được tắt 2 cửa sổ này trong quá trình Bot hoạt động. Bạn có thể minimize (thu nhỏ) chúng xuống thanh taskbar.
+
+🎮 Hướng dẫn sử dụng trên Discord
+    Bot sẽ lắng nghe tin nhắn từ Webhook hoặc tin nhắn có định dạng link đơn hàng trong các kênh được cấu hình.
+
+    Quy trình xử lý Eldorado (Tốc độ cao)
+    1. Khách vào game:
+        - Bấm nút màu Đỏ: ⚡ Khách vào (Ưu tiên).
+        - Bot sẽ ngay lập tức chiếm quyền điều khiển, mở đơn hàng, F5 liên tục nếu cần thiết để tìm và bấm nút "Order Delivered".
+
+    2. Trả ảnh bằng chứng:
+        - Sau khi giao dịch xong, chụp ảnh/quay video.
+        - Kéo thả file vào Thread Discord tương ứng.
+        - Bấm nút màu Xanh: 🚀 Đã giao (Gửi Proof).
+        - Bot sẽ tự động upload ảnh và gửi tin nhắn chat.
+
+    Quy trình xử lý G2G
+    1. Kéo thả ảnh bằng chứng vào Thread Discord.
+    2. Bấm nút màu Xanh: 🚀 Đã giao (Gửi Proof).
+    3. Bot sẽ tự động xử lý trên cửa sổ Chrome thứ 2 (G2G Worker).
+
+⚠️ Các lỗi thường gặp & Lưu ý
+    - Heartbeat blocked warning: Nếu thấy dòng này trong console, đừng lo lắng. Đó là do Bot đang đợi web tải (Async wait), nó sẽ tự động bỏ qua và tiếp tục chạy.
+    - Interaction failed: Đã được xử lý triệt để trong code. Nếu mạng lag, bạn chỉ cần bấm lại nút.
+    - Xung đột file: Tuyệt đối không chạy 2 Bot cùng lúc (ví dụ: vừa chạy trên VPS vừa chạy trên máy cá nhân) trỏ vào cùng 1 thư mục chrome_profile, sẽ gây lỗi crash trình duyệt.
