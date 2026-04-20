@@ -673,57 +673,82 @@ async def handle_eldorado(driver, url, qty, file_paths, order_id: str = ""):
         else:
             log("ELDO", order_id, f"⚠️ Mới được {len(sent_registry)}/{total_files} file.")
 
-    # 5. GỬI TIN NHẮN (Dùng UI - đơn giản và chắc chắn hoạt động)
-    msg_sent = False
+        # 5. GỬI TIN NHẮN (WebSocket trực tiếp — không cần iframe)
+        msg_sent = False
+        msg = "Done"
+        if os.path.exists("message.txt"):
+            with open("message.txt", "r", encoding="utf-8") as f:
+                msg = f.read().strip()
 
-    try:
-        driver.switch_to.default_content()
-        # Tìm iframe TalkJS - dùng selector giống như khi upload
-        frames = driver.find_elements(By.CSS_SELECTOR, "iframe[name*='talkjs']")
-        if not frames:
-            frames = driver.find_elements(By.CSS_SELECTOR, "iframe[src*='talkjs']")
-
-        if len(frames) > 0:
-            driver.switch_to.frame(frames[0])
-            await asyncio.sleep(0.5)
-
-            ed = None
-            for _ in range(20):
-                eds = driver.find_elements(By.CSS_SELECTOR, "div.test__entry-field")
-                if len(eds) > 0:
-                    ed = eds[0]
-                    break
-                await asyncio.sleep(0.2)
-
-            if ed:
-                msg = "Done"
-                if os.path.exists("message.txt"):
-                    with open("message.txt", "r", encoding="utf-8") as f:
-                        msg = f.read().strip()
-
-                # Nhập tin nhắn
-                driver.execute_script("arguments[0].innerHTML = '<p>'+arguments[1]+'</p>'; arguments[0].dispatchEvent(new Event('input', {bubbles:true}));", ed, msg)
-                await asyncio.sleep(0.5)
-
-                # Tìm và click nút send
-                send_btns = driver.find_elements(By.CSS_SELECTOR, "button.test__send-button")
-                if len(send_btns) > 0:
-                    driver.execute_script("arguments[0].click();", send_btns[0])
-                    log("ELDO", order_id, "✅ Đã gửi tin nhắn qua UI!")
-                    msg_sent = True
-                await asyncio.sleep(1)
-            else:
-                log("ELDO", order_id, "⚠️ Không tìm thấy ô nhập tin nhắn")
-        else:
-            log("ELDO", order_id, "⚠️ Không tìm thấy iframe để gửi tin nhắn")
-
-        driver.switch_to.default_content()
-    except Exception as e:
-        log("ELDO", order_id, f"⚠️ Lỗi gửi tin nhắn: {e}")
         try:
             driver.switch_to.default_content()
-        except:
-            pass
+
+            # Lấy conversation_id (đã có hàm viết sẵn)
+            conv_id = await extract_conversation_id(driver, order_id)
+
+            if conv_id:
+                # Dùng TalkJSClient đã khởi tạo sẵn
+                global talkjs_client
+
+                # Extract auth nếu chưa có hoặc token cũ
+                if not talkjs_client.auth_token:
+                    await talkjs_client.extract_auth_from_browser()
+
+                # Kết nối WebSocket (tự động skip nếu đã connected)
+                if not talkjs_client.is_connected:
+                    connected = await talkjs_client.ensure_connected()
+                    if not connected:
+                        log("ELDO", order_id, "⚠️ WS connect thất bại, fallback REST API")
+
+                # Gửi tin nhắn
+                if talkjs_client.is_connected:
+                    msg_id = await talkjs_client.send_text_message(conv_id, msg)
+                    if msg_id:
+                        log("ELDO", order_id, f"✅ Đã gửi qua WebSocket: {msg_id}")
+                        msg_sent = True
+                    else:
+                        log("ELDO", order_id, "⚠️ WS send thất bại, thử REST API")
+
+                # Fallback: REST API (không cần WebSocket)
+                if not msg_sent:
+                    msg_id = await talkjs_client.send_text_message_rest(conv_id, msg)
+                    if msg_id:
+                        log("ELDO", order_id, f"✅ Đã gửi qua REST API: {msg_id}")
+                        msg_sent = True
+
+            # Fallback cuối: UI (giữ lại phòng khi cả 2 API đều thất bại)
+            if not msg_sent:
+                log("ELDO", order_id, "⚠️ API thất bại, fallback UI...")
+                frames = driver.find_elements(By.CSS_SELECTOR, "iframe[name*='talkjs']")
+                if not frames:
+                    frames = driver.find_elements(By.CSS_SELECTOR, "iframe[src*='talkjs']")
+                if frames:
+                    driver.switch_to.frame(frames[0])
+                    await asyncio.sleep(0.5)
+                    for _ in range(20):
+                        eds = driver.find_elements(By.CSS_SELECTOR, "div.test__entry-field")
+                        if eds:
+                            driver.execute_script(
+                                "arguments[0].innerHTML = '<p>'+arguments[1]+'</p>';"
+                                "arguments[0].dispatchEvent(new Event('input', {bubbles:true}));",
+                                eds[0], msg
+                            )
+                            await asyncio.sleep(0.5)
+                            send_btns = driver.find_elements(By.CSS_SELECTOR, "button.test__send-button")
+                            if send_btns:
+                                driver.execute_script("arguments[0].click();", send_btns[0])
+                                log("ELDO", order_id, "✅ Đã gửi qua UI (fallback)")
+                                msg_sent = True
+                            break
+                        await asyncio.sleep(0.2)
+                    driver.switch_to.default_content()
+
+        except Exception as e:
+            log("ELDO", order_id, f"⚠️ Lỗi gửi tin nhắn: {e}")
+            try:
+                driver.switch_to.default_content()
+            except:
+                pass
 
     driver.implicitly_wait(10)
     log("ELDO", order_id, "🏁 Hoàn thành!")

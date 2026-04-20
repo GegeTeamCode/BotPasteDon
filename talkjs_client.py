@@ -46,6 +46,25 @@ class TalkJSClient:
         """Tăng và trả về request ID"""
         self._request_id += 1
         return self._request_id
+    
+    # talkjs_client.py — thêm method này vào class TalkJSClient
+
+    async def ensure_connected(self) -> bool:
+        """
+        Đảm bảo đang connected, tự reconnect nếu cần.
+        Gọi trước mỗi lần send message.
+        """
+        if self.is_connected:
+            return True
+
+        # Token có thể hết hạn — extract lại từ browser
+        self.auth_token = None
+        self.user_id = None
+
+        if not await self.extract_auth_from_browser(silent=True):
+            return False
+
+        return await self.connect()
 
     async def extract_auth_from_browser(self, silent: bool = False) -> bool:
         """
