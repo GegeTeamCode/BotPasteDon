@@ -33,6 +33,30 @@ SCANNER_CONFIG = {
         {
             "title_pattern": "Flawless Horadric",
             "display_name": "Custom - Flawless Horadric Gems"
+        },
+        {
+            "title_pattern": "18 Runes = 6x Jah Runes, 6x Que Runes, 6x Gar Runes (Heir of Perdition Pack Runes)",
+            "display_name": "18 Runes = 6x Jah, 6x Que, 6x Gar"
+        },
+        {
+            "title_pattern": "Heir of Perdition Runes",
+            "display_name": "6x Jah, 6x Que, 6x Gar"
+        },
+        {
+            "title_pattern": "18 Runes = 6x Jah Runes, 6x Que Runes, 6x Gar Runes (Heir of Perdition Pack Runes)",
+            "display_name": "18 Runes = 6x Ohm, 6x Wat, 6x Cem"
+        },
+        {
+            "title_pattern": "Ring of Starless Skies Runes",
+            "display_name": "6x Ohm, 6x Wat, 6x Cem"
+        },
+        {
+            "title_pattern": "18 Runes = 6x Jah Runes, 6x Que Runes, 6x Gar Runes (Heir of Perdition Pack Runes)",
+            "display_name": "18 Runes = 6x Ohm, 6x Wat, 6x Cem"
+        },
+        {
+            "title_pattern": "Ring of Starless Skies Runes",
+            "display_name": "6x Ohm, 6x Wat, 6x Cem"
         }
     ],
 
