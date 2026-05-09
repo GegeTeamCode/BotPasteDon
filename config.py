@@ -20,7 +20,21 @@ SCANNER_CONFIG = {
     "whitelist": "Divine Orb, Chaos Orb, Mirror of Kalandra, Gold, Boss Materials, Runes, Currency, Gems",
 
     # Blacklist: Bỏ qua đơn hàng chứa các từ này
-    "blacklist": "Boosting, Leveling, Account",
+    "blacklist": "Boosting, Leveling, Account, Custom oder",
+
+    # Title mapping: Ghi đè itemName khi đơn G2G có title khớp pattern
+    # "title_pattern": chuỗi cần chứa trong title (không phân biệt hoa/thường)
+    # "display_name": itemName sẽ bị thay thế bằng giá trị này
+    "G2G_TITLE_MAP": [
+        {
+            "title_pattern": "Any Grand Gems",
+            "display_name": "Custom - Grand Gems"
+        },
+        {
+            "title_pattern": "Flawless Horadric",
+            "display_name": "Custom - Flawless Horadric Gems"
+        }
+    ],
 
     # Platform được bật
     "platforms": {

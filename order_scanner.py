@@ -517,6 +517,16 @@ class OrderScanner:
             order_data = await self.extract_order_data(order_url)
 
             if order_data:
+                # G2G title mapping: ghi đè itemName nếu title khớp pattern
+                if self.platform.lower() == "g2g":
+                    title = order.get('title', '')
+                    if title:
+                        for mapping in self.config.get('G2G_TITLE_MAP', []):
+                            if mapping['title_pattern'].lower() in title.lower():
+                                log(self.platform_display, f"🔄 Title map: {order_data.get('itemName')} → {mapping['display_name']}")
+                                order_data['itemName'] = mapping['display_name']
+                                break
+
                 # CHỈ dùng scan_callback để gửi webhook (tránh duplicate)
                 # scan_callback sẽ gọi send_order_webhook trong GegeOrder.py
                 if self.scan_callback:
