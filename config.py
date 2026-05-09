@@ -17,7 +17,7 @@ SCANNER_CONFIG = {
     "auto_start": True,
 
     # Whitelist: Chỉ lấy đơn hàng chứa các từ này (để trống = lấy tất cả)
-    "whitelist": "Divine Orb, Chaos Orb, Mirror of Kalandra, Gold, Boss Materials, Runes, Currency, Gems",
+    "whitelist": "Divine Orb, Chaos Orb, Mirror of Kalandra, Gold, Boss Materials, Runes, Currency, Gems, Flawless Horadric",
 
     # Blacklist: Bỏ qua đơn hàng chứa các từ này
     "blacklist": "Boosting, Leveling, Account, Custom oder",
@@ -51,12 +51,12 @@ SCANNER_CONFIG = {
             "display_name": "6x Ohm, 6x Wat, 6x Cem"
         },
         {
-            "title_pattern": "18 Runes = 6x Jah Runes, 6x Que Runes, 6x Gar Runes (Heir of Perdition Pack Runes)",
-            "display_name": "18 Runes = 6x Ohm, 6x Wat, 6x Cem"
+            "title_pattern": "Harlequin Crest Runes",
+            "display_name": "6x Eom, 6x Lac, 6x Ceh"
         },
         {
-            "title_pattern": "Ring of Starless Skies Runes",
-            "display_name": "6x Ohm, 6x Wat, 6x Cem"
+            "title_pattern": "The Grandfather Runes",
+            "display_name": "6x Tam, 6x Mot, 6x Yax"
         }
     ],
 
