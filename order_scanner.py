@@ -412,6 +412,7 @@ class OrderScanner:
         """Quét danh sách G2G (non-blocking)"""
         def _sync_scan():
             orders = []
+            seen_ids = set()
             try:
                 rows = self.driver.find_elements(By.CSS_SELECTOR, "a.g-card-no-deco")
 
@@ -428,6 +429,11 @@ class OrderScanner:
                         order_id = normalize_id(id_match.group(1))
                         if not order_id or self._is_processed(order_id):
                             continue
+
+                        # Deduplicate: bỏ qua nếu cùng order ID đã có trong batch này
+                        if order_id in seen_ids:
+                            continue
+                        seen_ids.add(order_id)
 
                         title_el = row.find_elements(By.CSS_SELECTOR, 'span[data-attr="order-item-offer-title"]')
                         title = title_el[0].text if title_el else ""
@@ -458,6 +464,7 @@ class OrderScanner:
         """Quét danh sách Eldorado (non-blocking)"""
         def _sync_scan():
             orders = []
+            seen_ids = set()
             try:
                 rows = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="/order/"]')
 
@@ -480,6 +487,11 @@ class OrderScanner:
                         order_id = normalize_id(id_match.group(1))
                         if not order_id or self._is_processed(order_id):
                             continue
+
+                        # Deduplicate: bỏ qua nếu cùng order ID đã có trong batch này
+                        if order_id in seen_ids:
+                            continue
+                        seen_ids.add(order_id)
 
                         # Kiểm tra whitelist/blacklist (config có whitelist/blacklist ở top-level)
                         if not check_keywords(row.text, self.config):
@@ -506,6 +518,11 @@ class OrderScanner:
         """Xử lý đơn hàng mới"""
         order_id = order['id']
         order_url = order['url']
+
+        # Lớp bảo vệ: bỏ qua nếu đã xử lý (chặn duplicate lọt qua scan)
+        if self._is_processed(order_id):
+            log(self.platform_display, f"🚫 Bỏ qua duplicate: {order_id}")
+            return
 
         log(self.platform_display, f"🎯 Xử lý đơn hàng: {order_id}")
 
