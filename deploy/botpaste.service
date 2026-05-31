@@ -1,0 +1,15 @@
+[Unit]
+Description=BotPasteDon — All G2G Services
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=forking
+ExecStartPre=/bin/bash /opt/BotPasteDon/scripts/stop.sh
+ExecStart=/bin/bash /opt/BotPasteDon/scripts/start.sh --clean
+ExecStop=/bin/bash /opt/BotPasteDon/scripts/stop.sh
+RemainAfterExit=yes
+KillMode=none
+
+[Install]
+WantedBy=multi-user.target

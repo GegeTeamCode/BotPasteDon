@@ -1,18 +1,31 @@
-# Thư mục không cần push
+# Python
 __pycache__/
-cache/
-chrome_profile_eldo_scanner/
-chrome_profile_eldo_worker/
-chrome_profile_g2g_scanner/
-chrome_profile_g2g_worker/
-proofs/
-venv/
-
-# File tạm Python
 *.pyc
 *.pyo
 *.pyd
 .Python
+venv/
+
+# Runtime data
+cache/
+data/
+*.db
+
+# Browser profiles
+chrome_profile_*/
+
+# Proof files
+proofs/
+
+# HAR capture files
+HAR/
+
+# Temp / debug scripts
+tmp_*
+
+# Environment
+.env
+.env.local
 
 # OS
 .DS_Store
@@ -22,5 +35,17 @@ Thumbs.db
 .vscode/
 .idea/
 
-.env
-.env.local
+# Error screenshots
+error_*.png
+
+# Claude
+.claude/
+
+# Old root-level files (deleted, replaced by modules/)
+/GegeOrder.py
+/Guide.txt
+/config.py
+/driver_manager.py
+/order_queue.py
+/order_scanner.py
+/talkjs_client.py

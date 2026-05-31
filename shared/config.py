@@ -24,6 +24,12 @@ WEBHOOK_POE1 = os.getenv("WEBHOOK_POE1", "")
 ELDO_WEBHOOK_URL = os.getenv("ELDO_WEBHOOK_URL", "")
 G2G_WEBHOOK_URL = os.getenv("G2G_WEBHOOK_URL", "")
 
+# ── ERP Webhook ──
+ERP_WEBHOOK_URL = os.getenv("ERP_WEBHOOK_URL", "")
+ERP_API_KEY = os.getenv("ERP_API_KEY", "")
+ERP_API_KEY_ELDO = os.getenv("ERP_API_KEY_ELDO", "") or ERP_API_KEY
+ERP_API_KEY_G2G = os.getenv("ERP_API_KEY_G2G", "") or ERP_API_KEY
+
 # ── Chrome / Selenium ──
 CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH", "")
 HEADLESS_MODE = os.getenv("HEADLESS_MODE", "false").lower() in ("true", "1", "yes")
@@ -33,15 +39,25 @@ G2G_USE_API = os.getenv("G2G_USE_API", "false").lower() in ("true", "1", "yes")
 AUTH_SERVICE_URL = os.getenv("AUTH_SERVICE_URL", "http://localhost:8010")
 SENDBIRD_SESSION_KEY = os.getenv("SENDBIRD_SESSION_KEY", "")
 
+# ── Eldorado API ──
+ELDO_USE_API = os.getenv("ELDO_USE_API", "false").lower() in ("true", "1", "yes")
+
 # ── Database ──
 DATABASE_PATH = os.getenv("DATABASE_PATH", "data/orders.db")
+
+# ── G2G Auto-login ──
+G2G_EMAIL = os.getenv("G2G_EMAIL", "")
+G2G_PASSWORD = os.getenv("G2G_PASSWORD", "")
+
+# ── Dashboard ──
+DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8766"))
 
 # ── Scanner Configuration ──
 SCANNER_CONFIG = {
     "auto_start": True,
     "whitelist": os.getenv(
         "SCANNER_WHITELIST",
-        "Divine Orb, Chaos Orb, Mirror of Kalandra, Gold, Boss Materials, Runes, Currency, Gems, Flawless Horadric",
+        "Divine Orb, Chaos Orb, Exalted Orb, Mirror of Kalandra, Gold, Boss Materials, Runes, Currency, Gems, Flawless Horadric, Items, Husk, Lair Key, Crux, Key",
     ),
     "blacklist": os.getenv(
         "SCANNER_BLACKLIST",
@@ -95,7 +111,7 @@ SCANNER_CONFIG = {
         "default": WEBHOOK_DEFAULT or ELDO_WEBHOOK_URL,
         "mappings": [
             {"game": "Diablo 4", "keywords": ["diablo 4", "diablo iv", "d4"], "url": WEBHOOK_DIABLO4},
-            {"game": "Path of Exile 2", "keywords": ["poe2", "path of exile 2", "poe 2"], "url": WEBHOOK_POE2},
+            {"game": "Path of Exile 2", "keywords": ["poe2", "path of exile 2", "poe 2", "fate of the vaal"], "url": WEBHOOK_POE2},
             {"game": "Path of Exile", "keywords": ["path of exile", "poe1", "poe 1"], "url": WEBHOOK_POE1},
         ],
     },

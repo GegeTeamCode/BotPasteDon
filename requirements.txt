@@ -4,8 +4,6 @@ selenium>=4.15.0
 webdriver-manager>=4.0.1
 aiohttp>=3.9.0
 websockets
-
 python-dotenv>=1.0.0
-
-# Optional but recommended
-# requests>=2.0.0
+aiosqlite>=0.19.0
+curl_cffi>=0.7.0

@@ -1,0 +1,19 @@
+[Unit]
+Description=BotPasteDon Eldorado Scanner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botpaste
+Group=botpaste
+WorkingDirectory=/opt/BotPasteDon
+ExecStart=/opt/BotPasteDon/venv/bin/python -m scanners.main --platform eldorado
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+WatchdogSec=120
+
+[Install]
+WantedBy=multi-user.target

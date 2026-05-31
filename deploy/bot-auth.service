@@ -1,0 +1,15 @@
+[Unit]
+Description=BotPasteDon Auth Service
+After=network-online.target
+
+[Service]
+Type=simple
+User=botpaste
+WorkingDirectory=/opt/BotPasteDon
+ExecStart=/opt/BotPasteDon/venv/bin/python -m auth.main
+Restart=on-failure
+RestartSec=10
+WatchdogSec=120
+
+[Install]
+WantedBy=multi-user.target
