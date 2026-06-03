@@ -10,7 +10,9 @@ import asyncio
 import os
 import re
 import signal
+import tempfile
 from pathlib import Path
+from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
@@ -142,12 +144,47 @@ async def process_task(task_data: dict):
         PROCESSING_TASKS.discard(order_id)
 
 
+async def _download_g2g_file(file_info: dict, api_key: str = "") -> Optional[str]:
+    """Download file from ERP to temp dir. Returns local path or None."""
+    url = file_info.get("url", "")
+    evidence_id = file_info.get("evidence_id", "")
+    name = file_info.get("name", "evidence")
+
+    if not url or not evidence_id:
+        logger.warning(f"Invalid file info: {file_info}")
+        return None
+
+    try:
+        import aiohttp
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        params = {"evidence_id": evidence_id}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params,
+                                    timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status != 200:
+                    logger.error(f"Download failed: {resp.status} for {evidence_id}")
+                    return None
+                ext = Path(name).suffix or ".mp4"
+                tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False,
+                                                   prefix="erp_evidence_")
+                tmp.write(await resp.read())
+                tmp.close()
+                logger.info(f"Downloaded evidence: {name} ({tmp.name})")
+                return tmp.name
+    except Exception as e:
+        logger.error(f"Download error for {evidence_id}: {e}")
+        return None
+
+
 async def handle_g2g_api(order_id: str, task_data: dict):
     """Delivery via REST API — runs steps individually to track progress."""
     import re
     auth = await auth_manager.get_auth()
     qty = int(task_data.get("delivery_qty", "1"))
-    files = task_data.get("files", [])
+    raw_files = task_data.get("files", [])
     message_path = Path("message.txt")
     message = ""
     if message_path.exists():
@@ -162,6 +199,19 @@ async def handle_g2g_api(order_id: str, task_data: dict):
             api_id = m.group(1)
 
     skip_steps = set(task_data.get("skip_steps", []))
+
+    # Download ERP dict files to local paths
+    erp_api_key = task_data.get("erp_api_key", "")
+    files = []
+    for fp in raw_files:
+        if isinstance(fp, dict):
+            local = await _download_g2g_file(fp, erp_api_key)
+            if local:
+                files.append(local)
+        else:
+            files.append(fp)
+    if files != raw_files and files:
+        logger.info(f"[{order_id}] Downloaded {len(files)}/{len(raw_files)} files from ERP")
 
     # Run each step, tracking which succeed
     completed_steps = set(skip_steps)
@@ -186,13 +236,28 @@ async def handle_g2g_api(order_id: str, task_data: dict):
             task_data["skip_steps"] = list(completed_steps)
             raise
 
-    # Step 3: Send chat
+    # Step 3: Send chat (retry on auth error)
     if "chat" not in completed_steps and message:
-        try:
-            await api_client._send_chat(api_id, message, auth, auth.seller_id)
-            completed_steps.add("chat")
-        except Exception as e:
-            logger.warning(f"[{order_id}] Chat failed (non-fatal): {e}")
+        chat_ok = False
+        for attempt in range(2):
+            try:
+                await api_client._send_chat(api_id, message, auth, auth.seller_id)
+                completed_steps.add("chat")
+                chat_ok = True
+                break
+            except Exception as e:
+                err_str = str(e)
+                if "401" in err_str or "auth error" in err_str.lower():
+                    logger.warning(f"[{order_id}] Chat auth error (attempt {attempt+1}), refreshing JWT")
+                    try:
+                        auth = await auth_manager.get_auth()
+                    except Exception:
+                        break
+                else:
+                    logger.warning(f"[{order_id}] Chat failed (non-fatal): {e}")
+                    break
+        if not chat_ok:
+            logger.warning(f"[{order_id}] Chat not sent after retries")
 
 
 # ── G2G Delivery Logic ──

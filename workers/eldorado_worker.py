@@ -11,9 +11,11 @@ import os
 import re
 import json
 import signal
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
+from typing import Optional
 
 from aiohttp import web
 
@@ -176,6 +178,99 @@ async def process_task(task_data: dict):
 
 # ── API Delivery ──
 
+async def _download_file(file_info) -> Optional[str]:
+    """Download file from ERP to temp dir. Accepts dict {url, evidence_id, api_key} or path str."""
+    import tempfile
+    if isinstance(file_info, str):
+        return file_info  # Already a local path (from Discord coordinator)
+
+    url = file_info.get("url", "")
+    evidence_id = file_info.get("evidence_id", "")
+    api_key = file_info.get("api_key", "")
+    name = file_info.get("name", "evidence")
+
+    if not url or not evidence_id:
+        logger.warning(f"Invalid file info: {file_info}")
+        return None
+
+    try:
+        import aiohttp
+        headers = {}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        params = {"evidence_id": evidence_id}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params,
+                                    timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status != 200:
+                    logger.error(f"Download failed: {resp.status} for {evidence_id}")
+                    return None
+                # Determine extension from content-type or name
+                ext = Path(name).suffix or ".mp4"
+                tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False,
+                                                   prefix="erp_evidence_")
+                tmp.write(await resp.read())
+                tmp.close()
+                logger.info(f"Downloaded evidence: {name} → {tmp.name}")
+                return tmp.name
+    except Exception as e:
+        logger.error(f"Download error for {evidence_id}: {e}")
+        return None
+
+
+async def _talkjs_ensure_connected(auth) -> bool:
+    """Ensure TalkJS client has fresh auth token and is connected. Returns True if ready."""
+    if not talkjs_client:
+        return False
+    try:
+        if not talkjs_client.auth_token:
+            jwt = await api_client.call_with_retry(
+                api_client.get_talkjs_auth, auth)
+            talkjs_client.auth_token = jwt
+            talkjs_client.user_id = api_client.get_talkjs_user_id(jwt)
+
+        if not talkjs_client.is_connected:
+            await talkjs_client.connect()
+
+        return talkjs_client.is_connected
+    except Exception as e:
+        logger.warning(f"TalkJS connect failed: {e}")
+        return False
+
+
+async def _talkjs_send_with_retry(order_id: str, conv_id: str,
+                                   text: str, auth, max_retries: int = 2):
+    """Send TalkJS message with retry on 401. Reconnects with fresh token on auth failure."""
+    for attempt in range(max_retries + 1):
+        if not await _talkjs_ensure_connected(auth):
+            logger.warning(f"[{order_id}] TalkJS not connected (attempt {attempt + 1})")
+            continue
+
+        msg_id = await talkjs_client.send_text_message(conv_id, text)
+        if msg_id:
+            return msg_id
+
+        # Send failed — likely 401. Reconnect with fresh token.
+        logger.warning(f"[{order_id}] TalkJS msg failed (attempt {attempt + 1}), refreshing auth")
+        try:
+            await talkjs_client.close()
+        except Exception:
+            pass
+        talkjs_client.auth_token = None
+        talkjs_client._is_connected = False
+        # Fetch fresh TalkJS auth
+        try:
+            jwt = await api_client.call_with_retry(api_client.get_talkjs_auth, auth)
+            talkjs_client.auth_token = jwt
+            talkjs_client.user_id = api_client.get_talkjs_user_id(jwt)
+        except Exception as e:
+            logger.warning(f"[{order_id}] TalkJS auth refresh failed: {e}")
+            break
+
+    return None
+
+
 async def handle_eldo_api(order_id: str, task_data: dict):
     """Delivery via API — per-step with progress tracking."""
     from shared.eldo_api import AuthError
@@ -190,12 +285,22 @@ async def handle_eldo_api(order_id: str, task_data: dict):
     skip_steps = set(task_data.get("skip_steps", []))
     completed_steps = set(skip_steps)
     files = task_data.get("files", [])
+    erp_api_key = task_data.get("erp_api_key", "")
+
+    # Inject API key into file dicts so _download_file can use it
+    if erp_api_key:
+        for fp in files:
+            if isinstance(fp, dict):
+                fp["api_key"] = erp_api_key
 
     # Step 1: Deliver order (skip if already delivered e.g. "Khách vào" was pressed)
+    # Also cache conversation ID to avoid re-fetching in later steps
+    conv_id = ""
     if "deliver" not in completed_steps:
         try:
             detail = await api_client.call_with_retry(
                 api_client.get_order_detail, order_id, auth)
+            conv_id = detail.get("talkJsConversationId", "")
             state = (detail.get("state") or {}).get("state", "")
             if state in ("Delivering", "Delivered", "Completed", "Dispute"):
                 logger.info(f"[{order_id}] Already delivered (state={state}), skipping")
@@ -211,22 +316,25 @@ async def handle_eldo_api(order_id: str, task_data: dict):
     # Step 2: Upload proof files + send via TalkJS
     if "proofs" not in completed_steps and files and talkjs_client:
         try:
-            detail = await api_client.call_with_retry(
-                api_client.get_order_detail, order_id, auth)
-            conv_id = detail.get("talkJsConversationId", "")
+            # Try to get conv_id if step 1 was skipped (from retry_data)
+            if not conv_id:
+                detail = await api_client.call_with_retry(
+                    api_client.get_order_detail, order_id, auth)
+                conv_id = detail.get("talkJsConversationId", "")
             if conv_id:
-                if not talkjs_client.auth_token:
-                    jwt = await api_client.call_with_retry(
-                        api_client.get_talkjs_auth, auth)
-                    talkjs_client.auth_token = jwt
-                    talkjs_client.user_id = api_client.get_talkjs_user_id(jwt)
-
-                if not talkjs_client.is_connected:
-                    await talkjs_client.connect()
+                if not await _talkjs_ensure_connected(auth):
+                    logger.warning(f"[{order_id}] TalkJS not connected for proof upload")
 
                 uploaded = 0
                 for fp in files:
-                    file_info = await talkjs_client.upload_file(fp, conv_id)
+                    # ERP sends files as dicts {url, name, evidence_id}
+                    # Need to download first, then upload to Firebase
+                    local_path = await _download_file(fp)
+                    if not local_path:
+                        logger.warning(f"[{order_id}] Failed to download: {fp}")
+                        continue
+
+                    file_info = await talkjs_client.upload_file(local_path, conv_id)
                     if not file_info:
                         logger.warning(f"[{order_id}] Failed to upload: {fp}")
                         continue
@@ -246,19 +354,11 @@ async def handle_eldo_api(order_id: str, task_data: dict):
     # Step 3: Send chat message (include proof URLs if file attachment failed)
     if "chat" not in completed_steps and talkjs_client:
         try:
-            detail = await api_client.call_with_retry(
-                api_client.get_order_detail, order_id, auth)
-            conv_id = detail.get("talkJsConversationId", "")
+            if not conv_id:
+                detail = await api_client.call_with_retry(
+                    api_client.get_order_detail, order_id, auth)
+                conv_id = detail.get("talkJsConversationId", "")
             if conv_id:
-                if not talkjs_client.auth_token:
-                    jwt = await api_client.call_with_retry(
-                        api_client.get_talkjs_auth, auth)
-                    talkjs_client.auth_token = jwt
-                    talkjs_client.user_id = api_client.get_talkjs_user_id(jwt)
-
-                if not talkjs_client.is_connected:
-                    await talkjs_client.connect()
-
                 # Build message with proof URLs as clickable links
                 full_msg = message
                 if proof_urls:
@@ -266,13 +366,13 @@ async def handle_eldo_api(order_id: str, task_data: dict):
                     full_msg = f"{message}\n\n{links}"
 
                 if full_msg:
-                    if talkjs_client.is_connected:
-                        msg_id = await talkjs_client.send_text_message(conv_id, full_msg)
-                        if msg_id:
-                            completed_steps.add("chat")
-                            logger.info(f"[{order_id}] Chat sent")
+                    msg_id = await _talkjs_send_with_retry(
+                        order_id, conv_id, full_msg, auth)
+                    if msg_id:
+                        completed_steps.add("chat")
+                        logger.info(f"[{order_id}] Chat sent")
                     else:
-                        logger.warning(f"[{order_id}] TalkJS not connected, chat skipped")
+                        logger.warning(f"[{order_id}] Chat send failed after retry")
                 else:
                     logger.warning(f"[{order_id}] Chat send failed")
             else:
