@@ -101,6 +101,42 @@ ELDO_PROFILES = ["chrome_profile_eldo", "chrome_profile_eldo_bak1", "chrome_prof
 JWT_TTL = 780  # 13 min — refresh before JWT expires (15 min)
 
 
+_LOCK_FILES = (
+    "parent.lock", ".parentlock", "lock",
+    "SingletonLock", "SingletonCookie", "SingletonSocket",
+)
+
+
+def _cleanup_profile_locks(profile_dir: str) -> None:
+    """Remove stale browser lock files. Browsers killed uncleanly leave these
+    behind, blocking subsequent launches with "already running" errors."""
+    p = Path.cwd() / profile_dir
+    if not p.exists():
+        return
+    for fname in _LOCK_FILES:
+        try:
+            (p / fname).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _kill_orphan_browsers() -> None:
+    """Kill orphan browser/driver processes tied to bot profiles. Run on
+    startup + shutdown so leftovers don't hold profile singleton locks."""
+    import subprocess
+    patterns = ["camoufox-bin", "chromedriver"] + G2G_PROFILES + ELDO_PROFILES
+    for pat in patterns:
+        try:
+            subprocess.run(
+                ["pkill", "-9", "-f", pat],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
+            )
+        except Exception:
+            pass
+
+
 def _jwt_exp(token: str):
     try:
         payload = token.split(".")[1]
@@ -112,6 +148,7 @@ def _jwt_exp(token: str):
 
 def _create_driver(profile_dir: str):
     """Create Chrome driver with performance logging for CDP capture."""
+    _cleanup_profile_locks(profile_dir)
     options = Options()
     profile_path = Path.cwd() / profile_dir
     options.add_argument(f"--user-data-dir={profile_path}")
@@ -604,6 +641,7 @@ class EldoAuth(PlatformAuth):
 
         profile_path = Path.cwd() / profile_dir
         profile_path.mkdir(parents=True, exist_ok=True)
+        _cleanup_profile_locks(profile_dir)
 
         try:
             from camoufox.sync_api import Camoufox
@@ -688,9 +726,14 @@ class EldoAuth(PlatformAuth):
                                self._consecutive_failures, since_last)
                 return self.data or {}
 
+        from concurrent.futures import ThreadPoolExecutor
         for i in range(len(ELDO_PROFILES)):
             profile = ELDO_PROFILES[(self._profile_idx + i) % len(ELDO_PROFILES)]
-            data = self._capture_single(profile)
+            # Fresh thread per attempt: Playwright sync API leaves asyncio state
+            # in the thread after use, so reusing a thread for the next profile
+            # triggers "Sync API inside asyncio loop".
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                data = ex.submit(self._capture_single, profile).result()
             if data and data.get("logged_in") and data.get("xsrf_token"):
                 self.data = data
                 self.captured_at = time.time()
@@ -943,6 +986,12 @@ async def handle_logs(request: web.Request):
 
 async def run_auth_service():
     global db
+
+    # Clean orphan browsers + stale profile locks from any previous run
+    _kill_orphan_browsers()
+    for prof in G2G_PROFILES + ELDO_PROFILES:
+        _cleanup_profile_locks(prof)
+
     db = Database(DATABASE_PATH)
 
     # Clear stale login state from previous run
@@ -1026,10 +1075,16 @@ async def run_auth_service():
     await runner.cleanup()
     g2g_auth.close()
     eldo_auth.close()
+    _kill_orphan_browsers()
+    for prof in G2G_PROFILES + ELDO_PROFILES:
+        _cleanup_profile_locks(prof)
     logger.info("Auth service stopped")
 
 
 def main():
+    import atexit
+    atexit.register(_kill_orphan_browsers)
+
     def handle_signal(sig, frame):
         _shutdown.set()
 

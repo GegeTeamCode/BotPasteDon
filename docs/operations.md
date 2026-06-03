@@ -158,27 +158,63 @@ Nguyen nhan: ERP tra `ValidationError` khi `orderId` hoac `platform` bi thieu.
 ### Auth Service Camoufox Error
 
 **Trieu chung**: "Playwright Sync API inside the asyncio loop"
-**Nguyen nhan**: Camoufox Playwright sync API phat hien asyncio event loop cua main thread trong worker thread (Python < 3.12).
-**Fix**: `asyncio.set_event_loop(asyncio.new_event_loop())` trong `_capture_single()` — da co san.
-**Khi van fail**: Restart auth service. Profile bak1/bak2 co loi nhiet thoi.
+**Nguyen nhan**: Playwright sync API de lai asyncio state trong worker thread sau lan dung dau, nen profile thu 2/3 trong cung thread reuse cua ThreadPoolExecutor bi fail.
+**Fix da co san trong code**:
+1. `asyncio.set_event_loop(asyncio.new_event_loop())` dau `_capture_single()` — reset loop cho thread moi.
+2. `EldoAuth.capture()` chay moi profile trong `ThreadPoolExecutor(max_workers=1)` rieng → thread luon fresh khi rotate profile.
+**Khi van fail**: Restart auth service (auto-cleanup browsers + locks khi startup/shutdown, xem muc "Restart Auth Service" duoi).
+
+### Camoufox Playwright TypeError (coreBundle.js url undefined)
+
+**Trieu chung**:
+```
+TypeError: Cannot read properties of undefined (reading 'url')
+  at FFBrowserContext.<anonymous> (.../coreBundle.js:49624:39)
+```
+**Nguyen nhan**: Bug trong Playwright bundle khi page error khong co `location`. Khong phai code minh.
+**Workaround**: Retry logic + thread isolation cua `EldoAuth.capture()` tu retry profile khac → lan sau pass. Khong can lam gi them.
+**Fix triet de**: Upgrade Camoufox/Playwright (chua lam).
 
 ### G2G Scanner 401 During Extract
 
 **Trieu chung**: Scanner mark don delivering roi bi 401 khi fetch detail → don stuck.
 **Fix**: Smart retry — invalidates JWT cache, poll cho JWT moi (120s), retry 1 lan. Da implement trong `g2g_scanner_api.py`.
 
-### Chrome Profile Lock
+### Restart Auth Service (chuan)
 
-**Trieu chung**: "session not created" khi start service.
-**Nguyen nhan**: Old Chrome process ton tai, lock profile.
-**Fix**:
+Auth service co auto-cleanup tu **2026-06-04**: startup va shutdown deu pkill browser con + xoa lock files (Firefox `parent.lock/.parentlock/lock` + Chrome `Singleton*`) tren toan bo 4 profile g2g/eldo/bak1/bak2. Atexit safety net them de phong SIGKILL.
+
+→ Restart chuan chi can:
 ```bash
-# Kill all chrome processes
-pkill -9 chrome; pkill -9 chromedriver
-# Remove lock files
-rm -f chrome_profile_eldo/SingletonLock chrome_profile_eldo/SingletonCookie chrome_profile_eldo/SingletonSocket
-# Restart service
+# Stop watchdog truoc (de tranh auto-respawn auth dang dung)
+pgrep -f 'watchdog.py' | xargs -r kill -9
+# Kill auth — atexit handler tu pkill browser con
+pgrep -f 'auth.main' | xargs -r kill -9
+sleep 2
+# Start lai — startup tu pkill orphan + xoa lock
+cd /opt/BotPasteDon && HEADLESS_MODE=true nohup venv/bin/python -u -m auth.main > /tmp/auth.log 2>&1 &
+sleep 25
+# Restart watchdog
+nohup venv/bin/python scripts/watchdog.py > /tmp/watchdog.log 2>&1 &
 ```
+
+### Chrome Profile Lock (khi auth tat hoan toan)
+
+**Trieu chung**: "session not created" / "Firefox is already running" khi start service.
+**Nguyen nhan**: Auth service da tat hoan toan (qua atexit khong chay) → orphan chrome/camoufox + lock con sot lai.
+**Fix nhanh**: Restart auth service (xem muc tren) — auto-cleanup chay khi startup.
+**Fix thu cong** (khi can):
+```bash
+pgrep -f camoufox-bin | xargs -r kill -9
+pgrep -f chromedriver | xargs -r kill -9
+pgrep -f chrome_profile_g2g | xargs -r kill -9
+pgrep -f chrome_profile_eldo | xargs -r kill -9
+for p in chrome_profile_g2g chrome_profile_eldo chrome_profile_eldo_bak1 chrome_profile_eldo_bak2; do
+  rm -f /opt/BotPasteDon/$p/{parent.lock,.parentlock,lock,SingletonLock,SingletonCookie,SingletonSocket}
+done
+```
+
+**Luu y khi mo VNC viewer Camoufox cho profile bot**: Khi dong viewer, lock files se ton lai. Truoc 2026-06-04 phai rm thu cong; tu sau khi auth co auto-cleanup, lan capture ke tiep cua auth se tu xoa.
 
 ### Duplicate Process
 

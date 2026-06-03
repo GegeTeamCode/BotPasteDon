@@ -181,9 +181,9 @@ CREATE TABLE orders (
 );
 
 CREATE TABLE heartbeat (
-    service_id TEXT PRIMARY KEY,
-    pid INTEGER,
-    last_beat DATETIME
+    service_name TEXT PRIMARY KEY,
+    last_beat DATETIME,
+    pid INTEGER
 );
 ```
 
