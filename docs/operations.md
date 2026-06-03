@@ -12,6 +12,59 @@
 | ERP | `192.168.2.100:80` (Frappe/ERPNext) |
 | OS | Linux (LXC) |
 
+## AI Operator Notes
+
+Nguyen tac vu khi mot AI khac van hanh server nay:
+
+**SSH tu Windows host (no `sshpass`)**: Dung `paramiko` thay vi `ssh ... <<<password`. Pattern chuan:
+
+```python
+import paramiko
+ssh = paramiko.SSHClient()
+ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+ssh.connect("192.168.2.220", username="root", password="123456", timeout=15)
+_, stdout, _ = ssh.exec_command("ps aux | grep -v grep")
+print(stdout.read().decode())
+ssh.close()
+```
+
+**Launch background process qua paramiko**: `nohup ... &` co the lam paramiko channel hang. Dung `setsid + </dev/null + & disown` va goi qua `Transport.open_session()` thay vi `exec_command()`:
+
+```python
+chan = ssh.get_transport().open_session()
+chan.exec_command("cd /opt/BotPasteDon && setsid venv/bin/python -m auth.main </dev/null >/tmp/auth.log 2>&1 & disown")
+# poll exit_status_ready instead of stdout.read()
+```
+
+**`pkill -f` self-match trap (QUAN TRONG)**: Khi chay multi-command qua SSH:
+```bash
+# SAI - bash session co cmdline chua "chrome_profile_g2g",
+# pkill -f match chinh bash dang chay -> bash chet truoc cau lenh tiep
+pkill -f auth.main; pkill -f chrome_profile_g2g; pkill -f chromedriver
+```
+```bash
+# DUNG - moi pkill mot ssh.exec_command rieng, hoac dung pgrep | xargs:
+pgrep -f auth.main          | xargs -r kill -9
+pgrep -f chrome_profile_g2g | xargs -r kill -9
+pgrep -f chromedriver       | xargs -r kill -9
+```
+`pgrep -af` (in command line) + `xargs -r kill -9` (-r = skip neu input rong) la pattern an toan.
+
+**Phan biet python process vs bash launcher**: Khi check duplicate, `pgrep -af 'auth.main'` tra **2 entry** cho mot service:
+- `bash -c "cd /opt/BotPasteDon && nohup python -m auth.main..."` (launcher shell, vo hai)
+- `python -u -m auth.main` (service that)
+
+Loc bash wrapper bang `re.match(r"^bash\s+-c", cmd)` truoc khi dem instance. Xem [`scripts/check_all_processes.py`](../scripts/check_all_processes.py).
+
+**Watchdog tu respawn**: Khi can stop hoan toan mot service de deploy/debug, **phai stop watchdog truoc**, neu khong watchdog se restart service ngay khi ban kill xong:
+```bash
+pgrep -f 'watchdog.py' | xargs -r kill -9   # luon stop dau tien
+# ... do deploy / restart ...
+nohup venv/bin/python scripts/watchdog.py > /tmp/watchdog.log 2>&1 &   # restart cuoi cung
+```
+
+**Khong commit nham work cua nguoi khac**: Khi mo session, kiem tra `git status` truoc. Neu thay `modified` files khong lien quan task hien tai, hoi user truoc khi `git add` — co the la work-in-progress chua xong cua user.
+
 ## Service Ports
 
 | Service | Port | Process |
@@ -48,7 +101,11 @@ nohup venv/bin/python -u -m dashboard.server > /tmp/dashboard.log 2>&1 &
 ## Health Check
 
 ```bash
-# Kiem tra tat ca process
+# Toan canh 8 service trong 1 lenh (chay tu Windows host):
+python scripts/check_all_processes.py
+# In bang services + PIDs + ports + heartbeat. Bao DUP/DOWN/NO-PORT neu sai.
+
+# Kiem tra tat ca process truc tiep tren server
 ps aux | grep -E "scanner|worker|auth|coordinator|dashboard|watchdog" | grep -v grep
 
 # Kiem tra auth service
@@ -76,6 +133,37 @@ print(f'ERP unsynced: {c.fetchone()[0]}')
 conn.close()
 "
 ```
+
+### `/health` Endpoint Schema
+
+`GET http://localhost:8010/health` → JSON:
+
+```json
+{
+  "status": "ok",
+  "uptime": 1596,                            // giay tu khi start
+  "g2g": {
+    "has_jwt": true,                         // co JWT chua
+    "jwt_expires_in": 649,                   // giay den khi het han (JWT song 15 phut)
+    "fresh": true,                           // fresh = duoi 13 phut tu luc capture
+    "active_profile": "chrome_profile_g2g",
+    "cookies": 29
+  },
+  "eldo": {
+    "has_cookies": true,
+    "fresh": true,                           // fresh = duoi 13 phut
+    "active_profile": "chrome_profile_eldo_bak1",  // dang dung profile nao
+    "cookies": 126,
+    "xsrf": true,                            // co XSRF token chua
+    "logged_in": true                        // session da login chua
+  }
+}
+```
+
+**Co the gay nghi ngo**:
+- `fresh=false` keo dai > 15 phut → capture bi fail, xem `/tmp/auth*.log` (file moi nhat).
+- `logged_in=false` tren Eldo → profile mat session, can mo VNC re-login (xem muc "VNC inspection" duoi).
+- `has_jwt=false` tren G2G → Chrome session khong tao duoc, thuong la profile lock hoac orphan chrome (xem muc "Chrome Profile Lock").
 
 ## Log Locations
 
@@ -216,6 +304,30 @@ done
 
 **Luu y khi mo VNC viewer Camoufox cho profile bot**: Khi dong viewer, lock files se ton lai. Truoc 2026-06-04 phai rm thu cong; tu sau khi auth co auto-cleanup, lan capture ke tiep cua auth se tu xoa.
 
+### VNC Inspection — mo Camoufox visible de check session
+
+Khi can xem profile Eldo dang trong trang thai gi (login con valid? bi captcha? trang nao?):
+
+```python
+# Tu Windows host:
+python scripts/deploy_open_eldo.py
+# Script SCP open_eldo_vnc.py len /tmp/, launch Camoufox visible
+# tren Xvfb :99 voi profile chrome_profile_eldo (main).
+```
+
+Sau do connect VNC viewer (TightVNC/RealVNC/TigerVNC) tu may:
+- Host: `192.168.2.220:5900`
+- Password: `123456`
+
+Khi xong, dong viewer:
+```bash
+ssh root@192.168.2.220 "pkill -f open_eldo_vnc.py ; pkill -f camoufox-bin"
+```
+
+**Quan trong**: Sau khi pkill camoufox-bin, profile co the de lai `parent.lock` → block lan auth capture ke tiep. Tu **2026-06-04** auth tu xoa lock khi startup/next-capture, khong can lo. Truoc do phai `rm -f chrome_profile_eldo/parent.lock chrome_profile_eldo/.parentlock chrome_profile_eldo/lock` thu cong.
+
+**Conflict canh bao**: Auth service capture moi ~13 phut. Neu viewer dang mo va auth try capture cung profile → conflict lock, mot ben se fail. Hoac (a) stop auth tam thoi, hoac (b) chap nhan risk, hoac (c) copy profile sang folder tam de viewer khong dung profile that.
+
 ### Duplicate Process
 
 ```bash
@@ -302,4 +414,47 @@ conn.close()
 "
 ```
 
-**Luu y**: LXC khong co `sqlite3` CLI — dung Python thay the. Khong co `pgrep` — dung `ps aux | grep`.
+**Luu y**: LXC khong co `sqlite3` CLI — dung Python thay the. `pgrep` co san — uu tien `pgrep -af '<pattern>' | xargs -r kill -9` hon `ps aux | grep | awk | xargs kill` (xem AI Operator Notes).
+
+## Scripts Catalog
+
+Tat ca scripts trong `scripts/`. Chia 3 nhom: **server-resident** (chay tren server), **client-side ops** (chay tu Windows host qua paramiko), **helper modules** (script con duoc upload boi script khac).
+
+### Server-resident — chay tren server, da co trong start.sh
+
+| Script | Muc dich | Khi nao chay |
+|--------|----------|--------------|
+| [`start.sh`](../scripts/start.sh) | Start all 8 services theo thu tu phu thuoc (auth -> workers -> coordinator -> scanners -> dashboard -> watchdog) | Sau reboot server hoac sau full stop |
+| [`stop.sh`](../scripts/stop.sh) | Stop all services | Truoc khi reboot hoac maintenance lon |
+| [`watchdog.py`](../scripts/watchdog.py) | Long-running supervisor — check heartbeat moi 30s, restart service neu khong beat trong 90s | Luon chay (tu start.sh) |
+
+### Client-side ops — chay tu Windows host, dung paramiko vao server
+
+| Script | Muc dich | Output |
+|--------|----------|--------|
+| [`check_all_processes.py`](../scripts/check_all_processes.py) | Audit toan canh: liet ke 8 service, PID (chi count python, skip bash launcher), port, heartbeat HH:MM:SS. Bao `OK`/`DOWN`/`DUP xN`/`NO-PORT`. Cung in `/health` json. | Bang summary + verdict cuoi |
+| [`deploy_auth_patch.py`](../scripts/deploy_auth_patch.py) | Deploy `auth/main.py`: upload via SFTP -> backup -> stop watchdog -> stop auth/browsers -> plant lock files de verify cleanup -> start auth -> trigger /auth/eldo + /auth/g2g -> in audit. | Step-by-step log |
+| [`deploy_open_eldo.py`](../scripts/deploy_open_eldo.py) | Launch Camoufox visible voi profile `chrome_profile_eldo` (main) tren Xvfb :99. Dung de xem session qua VNC. | Path log + connect info |
+| [`open_eldo_vnc.py`](../scripts/open_eldo_vnc.py) | (Helper) — Script chay tren server, mo Camoufox headless=False, persistent_context tren profile main, dieu huong eldorado.gg, ngu vo han. SCP-deployed bang `deploy_open_eldo.py`. Khong chay truc tiep tu host. | – |
+| [`unlock_profiles.py`](../scripts/unlock_profiles.py) | Manual fallback khi auth tat hoan toan va profile co lock cu: pkill leftover camoufox + xoa Firefox/Chrome lock files cua all profiles -> trigger /auth/eldo. Sau **2026-06-04** it khi can vi auth co auto-cleanup. | Cleanup log |
+
+### Khi nao dung script nao
+
+```
+Trien khai code moi cho auth        -> deploy_auth_patch.py
+Trien khai code moi cho worker      -> (chua co script chuyen, tham khao deploy_auth_patch.py)
+Kiem tra he thong dang on khong     -> check_all_processes.py
+Auth Eldo bi 401 mai khong khoi     -> 1) check_all_processes.py 2) xem /tmp/auth*.log
+                                       3) restart auth (xem "Restart Auth Service")
+                                       4) neu van fail: unlock_profiles.py
+Muon xem profile dang trong state gi -> deploy_open_eldo.py + VNC viewer
+Scanner khong tim thay don           -> tail /tmp/eldo_scanner.log + Troubleshooting
+```
+
+### Server-only legacy scripts (khong trong repo)
+
+Mot so script da co tren `/opt/BotPasteDon/scripts/` nhung khong commit vao repo (legacy debug tools):
+`check_cookies.py`, `check_detail.py`, `check_game.py`, `check_order.py`, `check_pending.py`,
+`debug_kw.py`, `debug_scan.py`, `delete_order.py`, `dump_order.py`, `test_mapping.py`.
+
+Chay truc tiep tren server: `cd /opt/BotPasteDon && venv/bin/python scripts/<name>.py`. Cac script nay khong critical cho operations — chu yeu de adhoc inspection.
