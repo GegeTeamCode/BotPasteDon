@@ -304,6 +304,58 @@ done
 
 **Luu y khi mo VNC viewer Camoufox cho profile bot**: Khi dong viewer, lock files se ton lai. Truoc 2026-06-04 phai rm thu cong; tu sau khi auth co auto-cleanup, lan capture ke tiep cua auth se tu xoa.
 
+### Tra lai bang chung cho don da Completed (proof khong tu len marketplace)
+
+**Trieu chung**: Don da deliver xong (qty submitted, buyer da nhan), nhung phia
+marketplace (G2G/Eldorado) khong nhan file bang chung → seller bi withhold
+payment.
+
+**Nguyen nhan thuong gap**:
+- Worker xu ly lan dau bi auth error / JWT 401 / lock conflict roi mark FAILED
+  truoc khi kip upload proof — case nay phai xay ra truoc 2026-06-04
+  (truoc patch V1+V2+V3 auth + worker JWT-retry).
+- Worker download file tu ERP fail → khong co file de upload.
+
+**Tien quyet**:
+- SO tren ERP phai co `Order Evidence` record voi file attachment hop le.
+  Neu thieu, upload file qua ERP UI truoc, roi moi re-trigger.
+
+**Cach lam (idempotent, an toan voi don da Completed)**:
+
+```powershell
+# 1 don:
+python scripts/retry_post_evidence.py 1780330530899GUQE
+
+# nhieu don cung lan:
+python scripts/retry_post_evidence.py 1780330530899GUQE 1780327135934HNAR ...
+```
+
+Script:
+1. SSH ERP (192.168.2.100), tim ten Sell Order tu `external_order_id`.
+2. Tail log G2G + Eldo worker dang chay tren bot server.
+3. Goi `post_evidence_to_marketplace(SO, skip_steps='["qty"]')` cho moi SO.
+   `skip_steps=['qty']` bat buoc vi qty da submit roi — bo qua se kien G2G/Eldo
+   tra `400: Cannot perform action when order item status is delivering`.
+4. Cho `Completed: <order_id>` xuat hien trong worker log (~6s/don).
+5. In bang summary: `completed` / `failed` / `erp_fail` / `no_so` / `timeout`.
+
+**Cac verdict thuong gap**:
+
+| Verdict | Y nghia | Hanh dong |
+|---------|---------|-----------|
+| `completed` | Worker da upload proof + chat thanh cong | Verify tren marketplace dashboard |
+| `erp_fail` voi "Chua co bang chung de dang" | SO khong co `Order Evidence` | Upload file vao ERP truoc, chay lai |
+| `no_so` | Khong tim thay SO voi `external_order_id` do | Don cu/khong qua ERP — xu ly thu cong tren marketplace |
+| `failed` | Worker raise loi sau khi nhan task | Xem `/tmp/g2g_worker*.log` hoac `/tmp/eldo_worker*.log` quanh thoi diem do |
+| `timeout` | Worker khong report Completed trong 90s | Don co the dang retry JWT — kiem tra log truc tiep |
+
+**Luu y ERP-side workflow exception**:
+`post_evidence_to_marketplace` raise `WorkflowTransitionError: Not a valid
+Workflow Action` SAU khi worker accept (vi SO da o trang thai terminal nhu
+`Completed`/`Delivered`, khong con transition `Deliver`). Day la **benign** —
+proof da gui truoc khi exception fire. Script tu detect string nay va treat la
+success.
+
 ### VNC Inspection — mo Camoufox visible de check session
 
 Khi can xem profile Eldo dang trong trang thai gi (login con valid? bi captcha? trang nao?):
@@ -437,6 +489,8 @@ Tat ca scripts trong `scripts/`. Chia 3 nhom: **server-resident** (chay tren ser
 | [`deploy_open_eldo.py`](../scripts/deploy_open_eldo.py) | Launch Camoufox visible voi profile `chrome_profile_eldo` (main) tren Xvfb :99. Dung de xem session qua VNC. | Path log + connect info |
 | [`open_eldo_vnc.py`](../scripts/open_eldo_vnc.py) | (Helper) — Script chay tren server, mo Camoufox headless=False, persistent_context tren profile main, dieu huong eldorado.gg, ngu vo han. SCP-deployed bang `deploy_open_eldo.py`. Khong chay truc tiep tu host. | – |
 | [`unlock_profiles.py`](../scripts/unlock_profiles.py) | Manual fallback khi auth tat hoan toan va profile co lock cu: pkill leftover camoufox + xoa Firefox/Chrome lock files cua all profiles -> trigger /auth/eldo. Sau **2026-06-04** it khi can vi auth co auto-cleanup. | Cleanup log |
+| [`retry_post_evidence.py`](../scripts/retry_post_evidence.py) | Re-trigger ERP `post_evidence_to_marketplace` cho 1+ don da Completed nhung proof khong toi marketplace (worker fail truoc do). SSH ERP + tail worker log + goi voi `skip_steps=['qty']` per SO. Xem chi tiet o muc "Tra lai bang chung". | Bang verdict per order |
+| [`deploy_workers.py`](../scripts/deploy_workers.py) | Deploy `workers/*.py` qua SFTP. Stop watchdog -> kill workers -> upload -> start workers -> restart watchdog -> in audit + reachability probe. | Step log + audit table |
 
 ### Khi nao dung script nao
 
@@ -449,6 +503,8 @@ Auth Eldo bi 401 mai khong khoi     -> 1) check_all_processes.py 2) xem /tmp/aut
                                        4) neu van fail: unlock_profiles.py
 Muon xem profile dang trong state gi -> deploy_open_eldo.py + VNC viewer
 Scanner khong tim thay don           -> tail /tmp/eldo_scanner.log + Troubleshooting
+Don da Completed nhung proof khong   -> retry_post_evidence.py <order_id> [<order_id>...]
+  toi marketplace -> seller bi giu tien
 ```
 
 ### Server-only legacy scripts (khong trong repo)
