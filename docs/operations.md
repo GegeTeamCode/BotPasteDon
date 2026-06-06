@@ -268,6 +268,47 @@ TypeError: Cannot read properties of undefined (reading 'url')
 **Trieu chung**: Scanner mark don delivering roi bi 401 khi fetch detail → don stuck.
 **Fix**: Smart retry — invalidates JWT cache, poll cho JWT moi (120s), retry 1 lan. Da implement trong `g2g_scanner_api.py`.
 
+### G2G Scanner — Auth service unreachable (curl timeout 30s)
+
+**Trieu chung**:
+- `/tmp/g2g_scanner.log` lap di lap lai `Auth service unreachable (attempt N): curl: (28) Operation timed out`.
+- `curl http://localhost:8010/health` van tra (cached state) nhung `curl /auth/g2g` hang vo han.
+- `/health` co `has_jwt: true, jwt_expires_in: 0, fresh: false` keo dai.
+
+**Nguyen nhan**: `webdriver_manager.ChromeDriverManager().install()` mo `FileLock`
+tren `~/.wdm/.wdm-lock-chromedriver-linux64`. Mot lan goi nao do (thuong
+khi process khac da chiem lock cu, hoac install bi crash giua chung) leak FD
+vao auth process → cac lan `init_driver()` sau tu deadlock chinh lock cua minh.
+Co the verify bang `lsof /root/.wdm/.wdm-lock-chromedriver-linux64` thay
+chinh PID auth giu FD do.
+
+**Fix triet de da apply 2026-06-06** trong [`auth/main.py`](../auth/main.py):
+- Them `_find_local_chromedriver()`: glob `~/.wdm/drivers/chromedriver/.../chromedriver`,
+  tra ban version cao nhat.
+- `_create_driver()` uu tien dung path local truc tiep → bo qua wdm hoan toan,
+  khong tao file lock.
+- Fallback `ChromeDriverManager().install()` chi chay khi chromedriver chua co
+  (lan dau setup). Truoc fallback, defensive rm `.wdm-lock-chromedriver-linux64`.
+
+**Fix nhanh (truoc khi fix code da apply, hoac neu fix mat hieu luc)**:
+```bash
+# stop watchdog + auth, kill chrome/driver, clean lock, restart
+pgrep -f 'watchdog.py' | xargs -r kill -9
+pgrep -f 'python.*auth.main' | xargs -r kill -9
+pgrep -f camoufox-bin    | xargs -r kill -9
+pgrep -f chromedriver    | xargs -r kill -9
+pgrep -f chrome_profile  | xargs -r kill -9
+rm -f /root/.wdm/.wdm-lock-chromedriver-linux64
+# profile locks
+rm -f /opt/BotPasteDon/chrome_profile_g2g/{SingletonLock,SingletonCookie,SingletonSocket}
+for p in chrome_profile_eldo chrome_profile_eldo_bak1 chrome_profile_eldo_bak2; do
+  rm -f /opt/BotPasteDon/$p/{parent.lock,.parentlock,lock}
+done
+cd /opt/BotPasteDon && HEADLESS_MODE=true setsid venv/bin/python -u -m auth.main </dev/null >/tmp/auth.log 2>&1 & disown
+sleep 25
+nohup venv/bin/python scripts/watchdog.py > /tmp/watchdog.log 2>&1 &
+```
+
 ### Restart Auth Service (chuan)
 
 Auth service co auto-cleanup tu **2026-06-04**: startup va shutdown deu pkill browser con + xoa lock files (Firefox `parent.lock/.parentlock/lock` + Chrome `Singleton*`) tren toan bo 4 profile g2g/eldo/bak1/bak2. Atexit safety net them de phong SIGKILL.

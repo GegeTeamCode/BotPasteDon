@@ -146,6 +146,20 @@ def _jwt_exp(token: str):
         return None
 
 
+def _find_local_chromedriver():
+    """Locate chromedriver binary in ~/.wdm without invoking webdriver_manager.
+
+    Avoids the wdm FileLock that can leak FDs into the long-running auth
+    process and self-deadlock subsequent driver creations.
+    """
+    import glob
+    pattern = os.path.expanduser(
+        "~/.wdm/drivers/chromedriver/linux64/*/chromedriver-linux64/chromedriver"
+    )
+    candidates = sorted(glob.glob(pattern), reverse=True)
+    return candidates[0] if candidates else None
+
+
 def _create_driver(profile_dir: str):
     """Create Chrome driver with performance logging for CDP capture."""
     _cleanup_profile_locks(profile_dir)
@@ -173,7 +187,18 @@ def _create_driver(profile_dir: str):
     # CDP performance logging for JWT capture
     options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
-    service = Service(ChromeDriverManager().install())
+    # Prefer locally-installed chromedriver to avoid webdriver_manager filelock
+    # leak. Fallback to ChromeDriverManager only on first install.
+    local = _find_local_chromedriver()
+    if local:
+        service = Service(local)
+    else:
+        # Defensive: clear any stale wdm lock before falling back to install
+        try:
+            os.remove(os.path.expanduser("~/.wdm/.wdm-lock-chromedriver-linux64"))
+        except FileNotFoundError:
+            pass
+        service = Service(ChromeDriverManager().install())
     return webdriver.Chrome(service=service, options=options)
 
 
