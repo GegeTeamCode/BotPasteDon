@@ -21,6 +21,7 @@ import threading
 import time
 import logging
 from pathlib import Path
+from typing import Optional
 
 from aiohttp import web
 from selenium import webdriver
@@ -94,6 +95,20 @@ G2G_HOME = "https://www.g2g.com"
 G2G_DASHBOARD = "https://www.g2g.com/g2g-user/sale?status=preparing"
 G2G_LOGIN = "https://www.g2g.com/login"
 ELDO_HOME = "https://www.eldorado.gg"
+# Protected sell page — triggers authenticated API XHRs from page JS which we
+# scrape via CDP for the anti-fraud / build-time headers Eldorado expects. URL
+# discovered from the G2G-AutomationBot-v4 reference; /seller/orders returns
+# SSR 404 and never bootstraps the auth client.
+ELDO_SELL_PAGE = "https://www.eldorado.gg/dashboard/orders/sold"
+# Cheap authenticated probe to verify cookies are actually accepted by the API.
+ELDO_API_PROBE = "https://www.eldorado.gg/api/orders/me/statesCount"
+
+# Eldorado's own backend refresh endpoint. POSTing to it with the cached
+# RefreshToken cookie (and the XSRF + build-time headers) returns Set-Cookie
+# headers carrying a fresh IdToken (and rotated RefreshToken). Discovered via
+# CDP probe — direct AWS Cognito calls fail with SECRET_HASH errors because
+# Eldorado's Cognito client is configured with a client secret we don't have.
+ELDO_REFRESH_URL = "https://www.eldorado.gg/api/authentication/refreshTokens"
 
 G2G_PROFILES = ["chrome_profile_g2g"]
 ELDO_PROFILES = ["chrome_profile_eldo", "chrome_profile_eldo_bak1", "chrome_profile_eldo_bak2"]
@@ -640,6 +655,118 @@ class G2GAuth(PlatformAuth):
         return self.data
 
 
+def _eldo_api_probe(cookies: dict, xsrf: str, user_agent: str = "",
+                    nsure_device_id: str = "", x_client_build_time: str = "") -> bool:
+    """Probe ELDO_API_PROBE with the given auth bundle. Returns True iff the
+    response is 200 — the only way to be sure the cookies actually authenticate."""
+    if not cookies or not xsrf:
+        return False
+    from curl_cffi import requests as _cffi
+    cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    headers = {
+        "user-agent": user_agent or DEFAULT_USER_AGENT,
+        "accept": "application/json, text/plain, */*",
+        "origin": "https://www.eldorado.gg",
+        "referer": ELDO_SELL_PAGE,
+        "x-xsrf-token": xsrf,
+        "cookie": cookie_header,
+    }
+    if nsure_device_id:
+        headers["nsure-device-id"] = nsure_device_id
+    if x_client_build_time:
+        headers["x-client-build-time"] = x_client_build_time
+    try:
+        r = _cffi.get(ELDO_API_PROBE, headers=headers, timeout=10, impersonate="chrome120")
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _eldo_backend_refresh(cookies: dict, xsrf_token: str, user_agent: str = "",
+                          x_client_build_time: str = "") -> Optional[dict]:
+    """POST to Eldorado's own refresh endpoint with the cached cookies. The
+    server reads `__Host-EldoradoRefreshToken` from the Cookie header and
+    responds with `Set-Cookie` headers carrying a fresh IdToken (and often a
+    rotated RefreshToken too).
+
+    Returns a {cookie_name: value} dict of UPDATED cookies on 200, else None.
+    Headers were captured from a real Firefox session via Playwright probe.
+    """
+    if not cookies.get("__Host-EldoradoRefreshToken"):
+        logger.debug("[ELDO] backend refresh skipped — no RefreshToken cookie")
+        return None
+    if not xsrf_token:
+        logger.debug("[ELDO] backend refresh skipped — no XSRF token")
+        return None
+
+    from curl_cffi import requests as _cffi
+    cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    headers = {
+        "accept": "application/json, text/plain, */*",
+        "accept-language": "en-US,en;q=0.5",
+        "content-type": "application/json",
+        "origin": "https://www.eldorado.gg",
+        "referer": ELDO_SELL_PAGE,
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "user-agent": user_agent or DEFAULT_USER_AGENT,
+        "x-xsrf-token": xsrf_token,
+        "cookie": cookie_header,
+    }
+    if x_client_build_time:
+        headers["x-client-build-time"] = x_client_build_time
+
+    try:
+        r = _cffi.post(
+            ELDO_REFRESH_URL,
+            headers=headers,
+            data="{}",
+            impersonate="chrome136",
+            timeout=20,
+        )
+    except Exception as e:
+        logger.warning("[ELDO] backend refresh exception: %s", e)
+        return None
+
+    if r.status_code != 200:
+        body = (r.text or "")[:300]
+        logger.warning("[ELDO] backend refresh HTTP %d | body=%s", r.status_code, body)
+        return None
+
+    # Pull Set-Cookie values out of the response. curl_cffi returns headers as
+    # a multi-value dict; we want the new __Host-Eldorado* cookies.
+    updated = {}
+    try:
+        # curl_cffi response.cookies is a SimpleCookie-like dict
+        for name, val in r.cookies.items():
+            updated[name] = val
+    except Exception:
+        pass
+    # Fallback: parse Set-Cookie header(s) manually
+    if not updated:
+        try:
+            set_cookies = r.headers.get_list("set-cookie") if hasattr(r.headers, "get_list") else []
+            if not set_cookies:
+                raw = r.headers.get("set-cookie", "")
+                if raw:
+                    set_cookies = [raw]
+            for line in set_cookies:
+                name, _, rest = line.partition("=")
+                val, _, _ = rest.partition(";")
+                if name:
+                    updated[name.strip()] = val.strip()
+        except Exception:
+            pass
+
+    if not updated.get("__Host-EldoradoIdToken"):
+        logger.warning("[ELDO] backend refresh 200 but no new IdToken in Set-Cookie | body=%s",
+                       (r.text or "")[:200])
+        return None
+    logger.info("[ELDO] backend refresh OK | %d cookies updated (idToken refreshed)", len(updated))
+    return updated
+
+
 class EldoAuth(PlatformAuth):
     """Eldorado auth using Camoufox (bypass Cloudflare Turnstile)."""
 
@@ -648,6 +775,62 @@ class EldoAuth(PlatformAuth):
         self._profile_idx = 0
         self._consecutive_failures = 0
         self._last_failure_time = 0
+        # Captured per-cycle headers (from CDP). Eldo's API requires these.
+        self._nsure_device_id: str = ""
+        self._x_client_build_time: str = ""
+        # Last-known token-bearing cookies, kept across captures so a Cognito-
+        # only refresh can rebuild a complete auth bundle without re-running
+        # Camoufox.
+        self._last_cookies: dict = {}
+        self._last_user_agent: str = DEFAULT_USER_AGENT
+
+    def _try_backend_refresh(self) -> Optional[dict]:
+        """Hit Eldorado's own /api/authentication/refreshTokens endpoint to mint
+        a fresh IdToken without a browser. Returns a fully-formed auth `data`
+        dict on success, or None to fall back to the Camoufox path."""
+        rt = (self._last_cookies or {}).get("__Host-EldoradoRefreshToken")
+        if not rt:
+            return None
+        xsrf = (self._last_cookies or {}).get("__Host-XSRF-TOKEN", "")
+        if not xsrf:
+            return None
+
+        logger.info("[ELDO] Trying backend refresh (no browser)")
+        updated = _eldo_backend_refresh(
+            self._last_cookies, xsrf, self._last_user_agent,
+            x_client_build_time=self._x_client_build_time,
+        )
+        if not updated:
+            logger.info("[ELDO] Backend refresh failed — fallback to Camoufox")
+            return None
+
+        # Merge Set-Cookie updates into the cached bundle.
+        cookies = dict(self._last_cookies)
+        cookies.update(updated)
+        # Refresh xsrf if the server rotated it.
+        new_xsrf = updated.get("__Host-XSRF-TOKEN") or xsrf
+
+        # Probe API to confirm the new IdToken actually authenticates.
+        api_verified = _eldo_api_probe(
+            cookies, new_xsrf, self._last_user_agent,
+            nsure_device_id=self._nsure_device_id,
+            x_client_build_time=self._x_client_build_time,
+        )
+        if not api_verified:
+            logger.warning("[ELDO] Backend refresh returned tokens but API probe still failed")
+            return None
+
+        logger.info("[ELDO] Backend refresh OK (api_ok=True, %d cookies)", len(cookies))
+        return {
+            "cookies": cookies,
+            "xsrf_token": new_xsrf,
+            "user_agent": self._last_user_agent,
+            "logged_in": True,
+            "api_verified": True,
+            "nsure_device_id": self._nsure_device_id,
+            "x_client_build_time": self._x_client_build_time,
+            "refreshed_via": "eldo_backend",
+        }
 
     def _next_profile(self):
         self._profile_idx = (self._profile_idx + 1) % len(ELDO_PROFILES)
@@ -684,10 +867,49 @@ class EldoAuth(PlatformAuth):
                 user_data_dir=str(profile_path),
             ) as browser:
                 page = browser.new_page()
-                page.goto(ELDO_HOME, timeout=60000)
-                _time.sleep(5)
 
-                # Handle Cloudflare Turnstile
+                # CDP listener: Eldorado's API requires `nsure-device-id` (anti-
+                # fraud) and `x-client-build-time` (build stamp). These headers
+                # are set by page JS at request time and never appear as cookies,
+                # so we have to scrape them off in-flight via CDP.
+                cdp_captured = {}
+                try:
+                    cdp = page.context.new_cdp_session(page)
+                    cdp.send("Network.enable")
+
+                    def _on_cdp_request(params):
+                        try:
+                            req = params.get("request", {})
+                            url = req.get("url", "")
+                            h = {str(k).lower(): str(v)
+                                 for k, v in (req.get("headers") or {}).items()}
+                            if h.get("nsure-device-id") and not cdp_captured.get("nsure_device_id"):
+                                cdp_captured["nsure_device_id"] = h["nsure-device-id"]
+                            if "eldorado.gg/api/" in url:
+                                for key in ("x-xsrf-token", "x-client-build-time", "user-agent"):
+                                    if h.get(key) and not cdp_captured.get(key):
+                                        cdp_captured[key] = h[key]
+                        except Exception:
+                            pass
+
+                    cdp.on("Network.requestWillBeSent", _on_cdp_request)
+                except Exception as _cdp_err:
+                    logger.debug("[ELDO] CDP listener unavailable: %s", _cdp_err)
+
+                # Phase 1: homepage — let Cloudflare resolve any challenge before
+                # we hit a protected route.
+                page.goto(ELDO_HOME, timeout=60000, wait_until="domcontentloaded")
+                for _ in range(15):
+                    try:
+                        title = (page.title() or "").lower()
+                    except Exception:
+                        title = ""
+                    if "just a moment" not in title and "cloudflare" not in title:
+                        break
+                    _time.sleep(2)
+                _time.sleep(3)
+
+                # Handle Cloudflare Turnstile (rare, only on first capture per profile).
                 try:
                     turnstile = page.frame_locator('iframe[src*="challenges.cloudflare.com"]')
                     if turnstile:
@@ -697,9 +919,24 @@ class EldoAuth(PlatformAuth):
                 except Exception:
                     pass
 
+                # Phase 2: sell page — triggers the authenticated XHR pattern
+                # used by the API (gets us nsure-device-id + x-client-build-time
+                # via CDP). Also forces a Cognito access-token refresh on the
+                # page side when the cookie is near expiry.
+                page.goto(ELDO_SELL_PAGE, timeout=60000, wait_until="domcontentloaded")
                 _time.sleep(5)
+                try:
+                    page.evaluate("window.scrollBy(0, 500)")
+                except Exception:
+                    pass
+                try:
+                    page.wait_for_load_state("networkidle", timeout=15000)
+                except Exception:
+                    pass
+                _time.sleep(2)
 
-                # Trigger XSRF cookie
+                # Phase 3: explicit XSRF kick (defensive — usually already set
+                # by the sell page above).
                 try:
                     page.evaluate("""
                         fetch('/api/authentication/claims', {credentials: 'include'})
@@ -709,38 +946,86 @@ class EldoAuth(PlatformAuth):
                 except Exception:
                     pass
 
-                # Extract cookies
+                # Extract cookies (all eldorado.gg + login.eldorado.gg)
                 cookies_list = page.context.cookies()
                 cookies = {c["name"]: c["value"] for c in cookies_list}
-                xsrf = cookies.get("XSRF-TOKEN", "")
 
+                # Pull headers captured by CDP, with sensible fallbacks.
+                nsure_device_id = cdp_captured.get("nsure_device_id", "")
+                x_client_build_time = cdp_captured.get("x-client-build-time", "")
+                user_agent = cdp_captured.get("user-agent") or DEFAULT_USER_AGENT
+                xsrf = cdp_captured.get("x-xsrf-token") or cookies.get("__Host-XSRF-TOKEN", "")
                 if not xsrf:
                     for name in cookies:
                         nl = name.lower()
                         if "xsrf" in nl or "csrf" in nl or "antiforgery" in nl:
                             xsrf = cookies[name]
-                            logger.info("[ELDO] Found XSRF-like cookie: %s", name)
+                            logger.info("[ELDO] Fallback XSRF from cookie: %s", name)
                             break
 
                 url = page.url
-                logged_in = "login" not in url.lower()
+                url_logged_in = "login" not in url.lower()
+                has_id_token = bool(cookies.get("__Host-EldoradoIdToken"))
+                has_refresh_token = bool(cookies.get("__Host-EldoradoRefreshToken"))
+
+                # Probe the real API with the full header set Eldo expects.
+                api_verified = _eldo_api_probe(
+                    cookies, xsrf, user_agent,
+                    nsure_device_id=nsure_device_id,
+                    x_client_build_time=x_client_build_time,
+                )
+                if not api_verified:
+                    logger.warning("[ELDO] API probe failed on %s (idToken=%s refreshToken=%s)",
+                                   profile_dir, has_id_token, has_refresh_token)
+
+                logged_in = url_logged_in and api_verified
 
                 data = {
                     "cookies": cookies,
                     "xsrf_token": xsrf,
-                    "user_agent": DEFAULT_USER_AGENT,
+                    "user_agent": user_agent,
                     "logged_in": logged_in,
+                    "api_verified": api_verified,
+                    "nsure_device_id": nsure_device_id,
+                    "x_client_build_time": x_client_build_time,
+                    "refreshed_via": "camoufox",
                 }
-                logger.info("[ELDO] Capture: cookies=%d | xsrf=%s | logged_in=%s | url=%s | profile=%s",
-                             len(cookies), "yes" if xsrf else "no", logged_in, url[:60], profile_dir)
+                logger.info(
+                    "[ELDO] Capture: cookies=%d | xsrf=%s | nsure=%s | build=%s | idToken=%s | "
+                    "refresh=%s | url_ok=%s | api_ok=%s | url=%s | profile=%s",
+                    len(cookies), "yes" if xsrf else "no",
+                    "yes" if nsure_device_id else "no",
+                    "yes" if x_client_build_time else "no",
+                    "yes" if has_id_token else "no",
+                    "yes" if has_refresh_token else "no",
+                    url_logged_in, api_verified, url[:60], profile_dir,
+                )
 
                 if not logged_in:
-                    logger.warning("[ELDO] Not logged in on profile: %s", profile_dir)
+                    logger.warning("[ELDO] Not logged in on profile: %s (url_ok=%s api_ok=%s)",
+                                   profile_dir, url_logged_in, api_verified)
                 return data
 
         except Exception as e:
             logger.error("[ELDO] Camoufox capture failed on %s: %s", profile_dir, e)
             return {}
+
+    def _remember_for_refresh(self, data: dict) -> None:
+        """Cache the bits needed for a Cognito-only refresh next cycle."""
+        if not data:
+            return
+        cookies = data.get("cookies") or {}
+        if cookies:
+            self._last_cookies = dict(cookies)
+        ua = data.get("user_agent")
+        if ua:
+            self._last_user_agent = ua
+        nd = data.get("nsure_device_id")
+        if nd:
+            self._nsure_device_id = nd
+        bt = data.get("x_client_build_time")
+        if bt:
+            self._x_client_build_time = bt
 
     def capture(self) -> dict:
         # Back off if capture keeps failing
@@ -751,7 +1036,24 @@ class EldoAuth(PlatformAuth):
                                self._consecutive_failures, since_last)
                 return self.data or {}
 
+        # Fast path: Cognito-only refresh using the RefreshToken cookie we
+        # stashed last cycle. Avoids spinning Camoufox most of the time.
+        backend_data = self._try_backend_refresh()
+        if backend_data:
+            self.data = backend_data
+            self.captured_at = time.time()
+            self._remember_for_refresh(backend_data)
+            self._consecutive_failures = 0
+            return backend_data
+
         from concurrent.futures import ThreadPoolExecutor
+        # Snapshot the current Cognito tokens so we can detect when a Camoufox
+        # capture has stripped them (Eldo's response set-cookie on a failed
+        # session probe clears RefreshToken/IdToken — we don't want to overwrite
+        # a still-valid bundle with that stripped version).
+        prev_had_refresh = bool((self._last_cookies or {}).get("__Host-EldoradoRefreshToken"))
+        prev_had_id = bool((self._last_cookies or {}).get("__Host-EldoradoIdToken"))
+
         for i in range(len(ELDO_PROFILES)):
             profile = ELDO_PROFILES[(self._profile_idx + i) % len(ELDO_PROFILES)]
             # Fresh thread per attempt: Playwright sync API leaves asyncio state
@@ -760,11 +1062,32 @@ class EldoAuth(PlatformAuth):
             with ThreadPoolExecutor(max_workers=1) as ex:
                 data = ex.submit(self._capture_single, profile).result()
             if data and data.get("logged_in") and data.get("xsrf_token"):
+                # Guard: if we used to have RefreshToken and now we don't, the
+                # capture stripped our credentials — Eldo's response wiped the
+                # auth cookies. Discard the bad result, keep the previous data.
+                new_cookies = data.get("cookies") or {}
+                stripped = (
+                    prev_had_refresh and not new_cookies.get("__Host-EldoradoRefreshToken")
+                ) or (
+                    prev_had_id and not new_cookies.get("__Host-EldoradoIdToken")
+                )
+                if stripped:
+                    logger.warning(
+                        "[ELDO] Capture stripped auth cookies on %s — discarding result, "
+                        "keeping previous bundle (prev_had_refresh=%s prev_had_id=%s "
+                        "new_has_refresh=%s new_has_id=%s)",
+                        profile, prev_had_refresh, prev_had_id,
+                        bool(new_cookies.get("__Host-EldoradoRefreshToken")),
+                        bool(new_cookies.get("__Host-EldoradoIdToken")),
+                    )
+                    self._next_profile()
+                    continue
                 self.data = data
                 self.captured_at = time.time()
                 self.profile_dir = profile
                 self._profile_idx = ELDO_PROFILES.index(profile)
                 self._consecutive_failures = 0
+                self._remember_for_refresh(data)
                 return data
             logger.warning("[ELDO] Profile %s failed, trying next...", profile)
             self._next_profile()

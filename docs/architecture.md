@@ -203,7 +203,29 @@ DETECTED → NOTIFIED → THREAD_CREATED → DELIVERING → COMPLETED
 - Clients cache 5 phut, tu dong invalidate khi 401
 
 ### Eldorado Auth
-- Camoufox (anti-detect Firefox) mo eldorado.gg, capture cookies + XSRF token
+- Eldorado dung **AWS Cognito** lam OAuth broker (Google login → Cognito session)
+- Cookies critical: `__Host-EldoradoIdToken` (JWT, TTL ~1h), `__Host-EldoradoRefreshToken` (TTL ~30 ngay), `__Host-XSRF-TOKEN`
 - 3 profiles: `chrome_profile_eldo` (main), `_bak1`, `_bak2`
 - Auth service rotate profile khi capture fail
-- **Fix**: Camoufox Playwright sync API xung dot voi asyncio — fix bang `asyncio.set_event_loop(asyncio.new_event_loop())` trong worker thread
+
+**Two-tier refresh strategy** (Phase 4, 2026-06-08):
+
+1. **Backend refresh (fast path, ~1s, no browser)** — `POST https://www.eldorado.gg/api/authentication/refreshTokens`
+   - Su dung cached cookies (RefreshToken + XSRF + others) + headers (`x-xsrf-token`, `x-client-build-time`, UA)
+   - Body: `{}` (Eldo backend tu doc RefreshToken tu Cookie header)
+   - Response 200 + `Set-Cookie` chua IdToken (va co the rotated RefreshToken)
+   - Auth call API probe (`/api/orders/me/statesCount`) de verify
+   - **Khong dung AWS Cognito truc tiep**: Eldorado client `3a4hal6jgl8gf5hnnjo06k05s5` configured voi client secret → cac request truc tiep den `cognito-idp.us-east-2.amazonaws.com` tra `NotAuthorizedException: SECRET_HASH was not received`
+
+2. **Camoufox fallback (slow path, ~30s, browser)** — chi khi backend refresh fail
+   - Camoufox (anti-detect Firefox) mo `https://www.eldorado.gg/dashboard/orders/sold`
+   - `page.on("response")` listener (Firefox khong ho tro CDP) capture `nsure-device-id` + `x-client-build-time` headers tu authenticated XHRs cua page
+   - Extract cookies, run API probe
+   - Cookie preservation guard: neu capture moi mat IdToken/RefreshToken so voi truoc → reject, giu bundle cu
+
+**Camoufox capture flow**:
+- Phase 1: home page (Cloudflare check)
+- Phase 2: navigate `/dashboard/orders/sold` voi `wait_until="domcontentloaded"` + `wait_for_load_state("networkidle", 15s)`
+- Phase 3: extract cookies + verify API probe
+
+**Fix**: Camoufox Playwright sync API xung dot voi asyncio — fix bang `asyncio.set_event_loop(asyncio.new_event_loop())` trong worker thread

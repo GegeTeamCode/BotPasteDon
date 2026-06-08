@@ -22,6 +22,8 @@ class EldoAuthData:
     xsrf_token: str = ""
     user_agent: str = ""
     seller_id: str = ""
+    nsure_device_id: str = ""
+    x_client_build_time: str = ""
     updated_at: float = 0.0
 
     def cookie_header(self) -> str:
@@ -36,6 +38,10 @@ class EldoAuthData:
         }
         if self.xsrf_token:
             headers["x-xsrf-token"] = self.xsrf_token
+        if self.nsure_device_id:
+            headers["nsure-device-id"] = self.nsure_device_id
+        if self.x_client_build_time:
+            headers["x-client-build-time"] = self.x_client_build_time
         if self.cookies:
             headers["Cookie"] = self.cookie_header()
         return headers
@@ -107,10 +113,16 @@ class EldoAuthManager:
             xsrf_token=xsrf,
             user_agent=j.get("user_agent", ""),
             seller_id=seller_id,
+            nsure_device_id=j.get("nsure_device_id", ""),
+            x_client_build_time=j.get("x_client_build_time", ""),
             updated_at=time.time(),
         )
         self._expires_at = time.time() + self.TTL
-        logger.info("Eldorado auth fetched: cookies=%d | xsrf=%s | seller=%s",
-                     len(cookies), "yes" if xsrf else "no",
-                     seller_id[:8] + "..." if seller_id else "none")
+        logger.info(
+            "Eldorado auth fetched: cookies=%d | xsrf=%s | nsure=%s | build=%s | seller=%s",
+            len(cookies), "yes" if xsrf else "no",
+            "yes" if j.get("nsure_device_id") else "no",
+            "yes" if j.get("x_client_build_time") else "no",
+            seller_id[:8] + "..." if seller_id else "none",
+        )
         return self._cache

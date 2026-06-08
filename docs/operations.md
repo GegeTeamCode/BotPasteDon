@@ -268,6 +268,72 @@ TypeError: Cannot read properties of undefined (reading 'url')
 **Trieu chung**: Scanner mark don delivering roi bi 401 khi fetch detail → don stuck.
 **Fix**: Smart retry — invalidates JWT cache, poll cho JWT moi (120s), retry 1 lan. Da implement trong `g2g_scanner_api.py`.
 
+### Eldorado Auth — backend refresh + session re-login
+
+**Bot dung 2-tier refresh** (Phase 4, 2026-06-08):
+
+1. **Backend refresh (no browser, ~1s)** — `POST /api/authentication/refreshTokens`
+   voi cached cookies + `x-xsrf-token` + `x-client-build-time` headers. Eldorado
+   tra `Set-Cookie` chua IdToken moi. Auth thu cach nay TRUOC moi cycle (~13 min).
+2. **Camoufox fallback (~30s, browser)** — chi khi backend refresh fail (vd. khi
+   chua co IdToken vao session moi).
+
+**KHONG dung AWS Cognito truc tiep**: Eldorado configured client voi secret →
+`cognito-idp.us-east-2.amazonaws.com` tra `NotAuthorizedException: SECRET_HASH
+was not received`.
+
+**Health check**:
+```bash
+# JWT/cookie fresh?
+curl -s http://localhost:8010/health | python -m json.tool
+
+# Log refresh attempts (last 10 cycles)
+grep -E "\[ELDO\] (Trying backend|backend refresh|Capture:)" /tmp/auth*.log | tail -30
+
+# Mong doi: moi ~13 min co dong
+#   "Trying backend refresh (no browser)"
+#   "backend refresh OK | N cookies updated (idToken refreshed)"
+#   "Backend refresh OK (api_ok=True, M cookies)"
+```
+
+**Re-login (khi RefreshToken het han ~30 ngay HOAC backend refresh + Camoufox cung fail)**:
+
+Cookies critical:
+- `__Host-EldoradoIdToken` — TTL ~1h (auto refresh moi cycle)
+- `__Host-EldoradoRefreshToken` — TTL ~30 ngay (sau khi het, phai re-login VNC)
+- `__Host-XSRF-TOKEN` — verify cookie
+
+Quy trinh re-login (Camoufox visible qua VNC):
+
+```bash
+# 1. Stop watchdog + auth (tranh xung dot profile)
+ssh root@192.168.2.220 'pgrep -f "watchdog.py" | xargs -r kill -9; pgrep -f "python.*auth.main" | xargs -r kill -9'
+
+# 2. Clear profile lock + launch Camoufox visible voi profile main
+ssh root@192.168.2.220 'rm -f /opt/BotPasteDon/chrome_profile_eldo/{parent.lock,.parentlock,lock}'
+ssh root@192.168.2.220 'cd /opt/BotPasteDon && DISPLAY=:99 setsid venv/bin/python -u /tmp/open_eldo_vnc_profile.py chrome_profile_eldo </dev/null >/tmp/vnc_main.log 2>&1 & disown'
+
+# 3. Connect VNC 192.168.2.220:5900 (pwd 123456), login Google → Eldorado
+# 4. SIGTERM viewer de Camoufox SDK flush cookies cleanly
+ssh root@192.168.2.220 'pgrep -f open_eldo_vnc | xargs -r kill -TERM'
+
+# 5. Lap lai cho bak1, bak2 (deploy script open_eldo_vnc_profile.py accepts <profile_name>)
+# 6. Restart auth + watchdog
+ssh root@192.168.2.220 'cd /opt/BotPasteDon && HEADLESS_MODE=true setsid venv/bin/python -u -m auth.main </dev/null >/tmp/auth.log 2>&1 & disown'
+ssh root@192.168.2.220 'cd /opt/BotPasteDon && setsid venv/bin/python scripts/watchdog.py </dev/null >/tmp/watchdog.log 2>&1 & disown'
+```
+
+**Verify cookies sau re-login**:
+```python
+import sqlite3, datetime
+c = sqlite3.connect('/opt/BotPasteDon/chrome_profile_eldo/cookies.sqlite')
+for name, exp in c.execute("SELECT name, expiry FROM moz_cookies WHERE name LIKE '__Host-Eldorado%'"):
+    print(name, datetime.datetime.utcfromtimestamp(exp))
+# Mong doi:
+#   __Host-EldoradoIdToken     2026-06-08 02:25 UTC  (~30-60 phut)
+#   __Host-EldoradoRefreshToken 2026-07-08 01:55 UTC  (~30 ngay)
+```
+
 ### G2G Scanner — Auth service unreachable (curl timeout 30s)
 
 **Trieu chung**:
