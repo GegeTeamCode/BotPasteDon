@@ -41,6 +41,9 @@ error_*.png
 # Claude
 .claude/
 
+# Agent context (private working state — current-plan, handoff, decisions)
+.ai/
+
 # Old root-level files (deleted, replaced by modules/)
 /GegeOrder.py
 /Guide.txt
