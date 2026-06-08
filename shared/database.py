@@ -63,6 +63,45 @@ class Database:
                         last_beat DATETIME,
                         pid INTEGER
                     );
+
+                    CREATE TABLE IF NOT EXISTS marketplace_status (
+                        platform TEXT NOT NULL,
+                        order_id TEXT NOT NULL,
+                        order_item_id TEXT,
+                        marketplace_state TEXT NOT NULL,
+                        marketplace_state_at INTEGER,
+                        last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        last_pushed_at DATETIME,
+                        push_attempts INTEGER DEFAULT 0,
+                        raw_data TEXT,
+                        PRIMARY KEY (platform, order_id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_marketplace_status_state
+                        ON marketplace_status(platform, marketplace_state);
+
+                    CREATE TABLE IF NOT EXISTS marketplace_state_counts (
+                        platform TEXT NOT NULL,
+                        state TEXT NOT NULL,
+                        count INTEGER NOT NULL,
+                        fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (platform, state)
+                    );
+
+                    CREATE TABLE IF NOT EXISTS marketplace_disputes (
+                        platform TEXT NOT NULL,
+                        case_id TEXT NOT NULL,
+                        order_id TEXT NOT NULL,
+                        case_status TEXT NOT NULL,
+                        report_case TEXT,
+                        report_reason TEXT,
+                        report_qty INTEGER,
+                        first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        last_synced_at DATETIME,
+                        notified_pushed_at DATETIME,
+                        raw_data TEXT,
+                        PRIMARY KEY (platform, case_id)
+                    );
                 """)
                 conn.commit()
 
@@ -252,5 +291,163 @@ class Database:
                     (f"-{threshold_seconds}",),
                 ).fetchall()
                 return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
+    # ── marketplace_status (status_sync) ───────────────────────────────────
+
+    def get_marketplace_status(self, platform: str, order_id: str) -> Optional[Dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM marketplace_status WHERE platform=? AND order_id=?",
+                    (platform, order_id),
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+
+    def upsert_marketplace_status(self, platform: str, order_id: str,
+                                  marketplace_state: str,
+                                  order_item_id: Optional[str] = None,
+                                  marketplace_state_at: Optional[int] = None,
+                                  raw_data: Optional[str] = None,
+                                  mark_pushed: bool = False) -> Optional[str]:
+        """Insert or update marketplace state. Returns previous state if existing
+        (so caller can decide whether to push diff), or None if inserted new."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT marketplace_state FROM marketplace_status WHERE platform=? AND order_id=?",
+                    (platform, order_id),
+                ).fetchone()
+                prev = row["marketplace_state"] if row else None
+
+                if row:
+                    sql = ("UPDATE marketplace_status SET marketplace_state=?, "
+                           "order_item_id=COALESCE(?, order_item_id), "
+                           "marketplace_state_at=COALESCE(?, marketplace_state_at), "
+                           "raw_data=COALESCE(?, raw_data), "
+                           "last_synced_at=CURRENT_TIMESTAMP"
+                           + (", last_pushed_at=CURRENT_TIMESTAMP" if mark_pushed else "")
+                           + " WHERE platform=? AND order_id=?")
+                    conn.execute(sql, (marketplace_state, order_item_id,
+                                       marketplace_state_at, raw_data, platform, order_id))
+                else:
+                    conn.execute(
+                        "INSERT INTO marketplace_status "
+                        "(platform, order_id, order_item_id, marketplace_state, "
+                        " marketplace_state_at, raw_data, last_pushed_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, " +
+                        ("CURRENT_TIMESTAMP" if mark_pushed else "NULL") + ")",
+                        (platform, order_id, order_item_id, marketplace_state,
+                         marketplace_state_at, raw_data),
+                    )
+                conn.commit()
+                return prev
+            finally:
+                conn.close()
+
+    def mark_marketplace_pushed(self, platform: str, order_id: str, success: bool):
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                if success:
+                    conn.execute(
+                        "UPDATE marketplace_status SET last_pushed_at=CURRENT_TIMESTAMP, "
+                        "push_attempts=0 WHERE platform=? AND order_id=?",
+                        (platform, order_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE marketplace_status SET push_attempts=push_attempts+1 "
+                        "WHERE platform=? AND order_id=?",
+                        (platform, order_id),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_marketplace_state_counts(self, platform: str) -> Dict[str, int]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT state, count FROM marketplace_state_counts WHERE platform=?",
+                    (platform,),
+                ).fetchall()
+                return {r["state"]: r["count"] for r in rows}
+            finally:
+                conn.close()
+
+    def set_marketplace_state_counts(self, platform: str, counts: Dict[str, int]):
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                for state, count in counts.items():
+                    conn.execute(
+                        "INSERT OR REPLACE INTO marketplace_state_counts "
+                        "(platform, state, count, fetched_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                        (platform, state, count),
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+    # ── marketplace_disputes (G2G cases) ────────────────────────────────────
+
+    def get_dispute(self, platform: str, case_id: str) -> Optional[Dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT * FROM marketplace_disputes WHERE platform=? AND case_id=?",
+                    (platform, case_id),
+                ).fetchone()
+                return dict(row) if row else None
+            finally:
+                conn.close()
+
+    def upsert_dispute(self, platform: str, case_id: str, order_id: str,
+                       case_status: str, report_case: Optional[str] = None,
+                       report_reason: Optional[str] = None,
+                       report_qty: Optional[int] = None,
+                       raw_data: Optional[str] = None,
+                       mark_notified: bool = False) -> Optional[str]:
+        """Insert or update dispute. Returns previous case_status if existing."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT case_status FROM marketplace_disputes WHERE platform=? AND case_id=?",
+                    (platform, case_id),
+                ).fetchone()
+                prev = row["case_status"] if row else None
+
+                if row:
+                    sql = ("UPDATE marketplace_disputes SET case_status=?, "
+                           "report_case=COALESCE(?, report_case), "
+                           "report_reason=COALESCE(?, report_reason), "
+                           "report_qty=COALESCE(?, report_qty), "
+                           "raw_data=COALESCE(?, raw_data), "
+                           "last_synced_at=CURRENT_TIMESTAMP"
+                           + (", notified_pushed_at=CURRENT_TIMESTAMP" if mark_notified else "")
+                           + " WHERE platform=? AND case_id=?")
+                    conn.execute(sql, (case_status, report_case, report_reason,
+                                       report_qty, raw_data, platform, case_id))
+                else:
+                    conn.execute(
+                        "INSERT INTO marketplace_disputes "
+                        "(platform, case_id, order_id, case_status, report_case, "
+                        " report_reason, report_qty, raw_data, last_synced_at, notified_pushed_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, " +
+                        ("CURRENT_TIMESTAMP" if mark_notified else "NULL") + ")",
+                        (platform, case_id, order_id, case_status, report_case,
+                         report_reason, report_qty, raw_data),
+                    )
+                conn.commit()
+                return prev
             finally:
                 conn.close()

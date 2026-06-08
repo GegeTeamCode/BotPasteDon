@@ -2,7 +2,7 @@
 
 ## Tong quan
 
-BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao hang tren 2 marketplace: **Eldorado.gg** va **G2G.com**. Gom 8 process doc lap giao tiep qua HTTP API va shared SQLite database.
+BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao hang tren 2 marketplace: **Eldorado.gg** va **G2G.com**. Gom 9 process doc lap giao tiep qua HTTP API va shared SQLite database.
 
 ## Process Map
 
@@ -14,6 +14,7 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 | Eldo Worker | 8001 | `python -m workers.eldorado_worker` | Thuc hien giao hang Eldorado |
 | G2G Worker | 8002 | `python -m workers.g2g_worker` | Thuc hien giao hang G2G |
 | Coordinator | 8030 | `python -m coordinator.main` | Discord bot, dispatch task den workers |
+| Status Sync | -- | `python -m status_sync` | Poll marketplace state (G2G + Eldo) → push ERP `status_update` mỗi 30 min |
 | Dashboard | 8766 | `python -m dashboard.server` | Web UI monitoring, OTP relay, logs |
 | Watchdog | -- | `python scripts/watchdog.py` | Auto-restart crashed services |
 
@@ -36,6 +37,9 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 
   Auth Service :8010 ◄─── All processes fetch JWT/cookies here
   SQLite DB ◄─────────── All processes read/write orders
+
+  Status Sync ─── polls G2G + Eldo state every 30m ───► ERP status_update webhook
+              ───► writes marketplace_status / marketplace_disputes (SQLite)
 ```
 
 ## Module Details
@@ -97,6 +101,26 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 
 **`coordinator/main.py`** — Thin entry point.
 
+### status_sync/
+
+**`status_sync/main.py`** — long-running process, async cycle moi 30 min.
+
+- **`G2GSync`** (`g2g_sync.py`): poll `count-my-orders` (cheap tripwire) → fetch `list_my_order` cho cac state changed (`completed`, `cancelled`). Poll `list_my_cases` moi cycle de detect dispute. Push `status_update` len ERP webhook khi state thay doi.
+- **`EldoSync`** (`eldo_sync.py`): poll `statesCount` → fetch `/api/orders/me/seller/orders` paginated cho cac state changed (`Delivered`, `Disputed`, `Completed`, `Canceled`). Push `status_update` len ERP webhook.
+- **`ERPClient`** (`erp_client.py`): aiohttp client gui `POST status_update` voi exponential backoff retry (5xx) + no-retry 4xx.
+- **First run**: silent backfill — insert toan bo state hien tai vao DB KHONG push ERP (tranh spam ~10k transitions gia). Tu cycle 2: chi push thay doi.
+
+State mapping → ERP `workflow_state`:
+| Marketplace state | ERP workflow_state |
+|---|---|
+| g2g.completed / eldo.Completed | Completed |
+| g2g.cancelled / eldo.Canceled | Refunded |
+| g2g (case open synthesized) / eldo.Disputed | Disputed |
+| eldo.Delivered | Delivered |
+| eldo.Received / eldo.PendingDelivery | (ignored) |
+
+PROTECTED workflow states ERP webhook KHONG override: `Refunded`, `Partially Refunded`, `Cancellation Requested`, `Outstanding`, `Payment Pending`.
+
 ### dashboard/
 
 **`dashboard/server.py`** — aiohttp web server (port 8766).
@@ -114,7 +138,7 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 |------|-------|
 | `config.py` | Load .env, dinh ngha SCANNER_CONFIG (whitelist/blacklist, webhook routing, G2G title mapping, scan intervals) |
 | `constants.py` | Order states, platform URLs, cache TTL, user-agent |
-| `database.py` | SQLite WAL, thread-safe. Tables: `orders` (lifecycle), `heartbeat` (monitoring) |
+| `database.py` | SQLite WAL, thread-safe. Tables: `orders` (lifecycle), `heartbeat` (monitoring), `marketplace_status` / `marketplace_state_counts` / `marketplace_disputes` (status_sync) |
 | `discord_utils.py` | `format_order_message`, `match_webhook`, `send_discord_webhook`, `send_erp_webhook` |
 | `driver_manager.py` | Chrome WebDriver factory voi anti-detection |
 | `eldo_api.py` | Eldo REST client (curl_cffi). Pending orders, detail, deliver, TalkJS auth, game library |
@@ -185,6 +209,43 @@ CREATE TABLE heartbeat (
     last_beat DATETIME,
     pid INTEGER
 );
+
+-- status_sync (added 2026-06):
+CREATE TABLE marketplace_status (
+    platform TEXT NOT NULL,           -- "g2g" | "eldorado"
+    order_id TEXT NOT NULL,
+    order_item_id TEXT,
+    marketplace_state TEXT NOT NULL,  -- "completed" / "cancelled" / "disputed" / ...
+    marketplace_state_at INTEGER,
+    last_synced_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_pushed_at DATETIME,           -- NULL = not yet pushed to ERP
+    push_attempts INTEGER DEFAULT 0,
+    raw_data TEXT,
+    PRIMARY KEY (platform, order_id)
+);
+
+CREATE TABLE marketplace_state_counts (
+    platform TEXT NOT NULL,
+    state TEXT NOT NULL,               -- e.g. "completed", "delivering", camelCase keys
+    count INTEGER NOT NULL,
+    fetched_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (platform, state)
+);
+
+CREATE TABLE marketplace_disputes (
+    platform TEXT NOT NULL,
+    case_id TEXT NOT NULL,
+    order_id TEXT NOT NULL,
+    case_status TEXT NOT NULL,         -- "open" / "closed" / ...
+    report_case TEXT,
+    report_reason TEXT,
+    report_qty INTEGER,
+    first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_synced_at DATETIME,
+    notified_pushed_at DATETIME,        -- NULL until ERP gets "disputed" push
+    raw_data TEXT,
+    PRIMARY KEY (platform, case_id)
+);
 ```
 
 ## Order State Machine
@@ -228,4 +289,6 @@ DETECTED → NOTIFIED → THREAD_CREATED → DELIVERING → COMPLETED
 - Phase 2: navigate `/dashboard/orders/sold` voi `wait_until="domcontentloaded"` + `wait_for_load_state("networkidle", 15s)`
 - Phase 3: extract cookies + verify API probe
 
-**Fix**: Camoufox Playwright sync API xung dot voi asyncio — fix bang `asyncio.set_event_loop(asyncio.new_event_loop())` trong worker thread
+**Fixes**:
+- Camoufox Playwright sync API xung dot voi asyncio → fix bang `asyncio.set_event_loop(asyncio.new_event_loop())` trong worker thread
+- G2G chromedriver: bo qua `webdriver_manager` (FileLock leak vao auth process tu deadlock) → glob `~/.wdm/drivers/.../chromedriver` truc tiep, fallback `ChromeDriverManager().install()` chi khi binary chua ton tai (Phase fix 2026-06-06)

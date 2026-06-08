@@ -136,6 +136,42 @@ class EldoradoAPIClient:
         j = self._parse(r, "order_detail")
         return j
 
+    # ── status_sync APIs ────────────────────────────────────────────────────
+
+    def list_orders_by_state(self, order_state: str, auth: EldoAuthData,
+                              cursor: str = "", page_size: int = 20) -> tuple:
+        """Paginated order list for given state. Returns (results, next_cursor).
+        Pass cursor='' (or default sentinel) for first page (newest)."""
+        params = {
+            "cursorValue": cursor or INITIAL_CURSOR,
+            "pageSize": str(page_size),
+            "pageDirection": "Next",
+            "orderState": order_state,
+            "isAscendingDateOrder": "false",
+            "ignorePendingReviewOrders": "true",
+            "displayFilter": "DisplaySellingOrders",
+            "orderGroup": "Regular",
+        }
+        r = self._sess.get(
+            f"{BASE}/orders/me/seller/orders", params=params,
+            headers=auth.build_headers(), timeout=30,
+        )
+        j = self._parse(r, f"list_by_state_{order_state}")
+        results = j.get("results") or []
+        next_cursor = j.get("nextPageCursor") or ""
+        return results, next_cursor
+
+    def get_states_count(self, auth: EldoAuthData) -> dict:
+        """Return Eldorado counts per state: {pendingDelivery, disputed, delivered,
+        received, completed, canceled}. Cheap tripwire for changes."""
+        params = {"displayFilter": "DisplaySellingOrders", "orderGroup": "Regular"}
+        r = self._sess.get(
+            f"{BASE}/orders/me/statesCount", params=params,
+            headers=auth.build_headers(), timeout=30,
+        )
+        j = self._parse(r, "states_count")
+        return j or {}
+
     # ── Worker APIs ────────────────────────────────────────────────────────
 
     def deliver_order(self, order_id: str, auth: EldoAuthData) -> dict:

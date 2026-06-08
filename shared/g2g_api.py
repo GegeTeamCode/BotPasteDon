@@ -120,6 +120,69 @@ class G2GAPIClient:
         j = self._parse(r, "order_detail")
         return j.get("payload", {})
 
+    # ── status_sync APIs ────────────────────────────────────────────────────
+
+    def list_orders_by_status(self, status: str, auth: G2GAuthData,
+                               seller_id: str = "") -> list:
+        """List orders filtered by G2G status (delivering / completed / cancelled / ...).
+        Returns list (max ~20 newest by default — G2G list_my_order pagination is
+        limited so we only catch top-of-list changes per cycle)."""
+        if not seller_id:
+            seller_id = auth.seller_id or self._seller_id or ""
+        r = self._sess.get(
+            f"{BASE}/order/list_my_order",
+            params={"seller_id": seller_id, "status": status,
+                    "include_pending_proof_only": "0"},
+            headers=auth.build_headers(),
+            timeout=30,
+        )
+        try:
+            j = self._parse(r, f"list_my_order_{status}")
+        except APIError:
+            return []
+        payload = j.get("payload")
+        if isinstance(payload, list):
+            return payload
+        return (payload or {}).get("results") or []
+
+    def count_my_orders(self, auth: G2GAuthData, seller_id: str = "") -> dict:
+        """Return G2G counts: {to_pay, verifying_payment, preparing, delivering,
+        issues, last_order_completed_at}. Cheap tripwire for changes."""
+        if not seller_id:
+            seller_id = auth.seller_id or self._seller_id or ""
+        r = self._sess.get(
+            f"{BASE}/order/count-my-orders",
+            params={"seller_id": seller_id},
+            headers=auth.build_headers(),
+            timeout=30,
+        )
+        j = self._parse(r, "count_my_orders")
+        return j.get("payload") or {}
+
+    def list_my_cases(self, auth: G2GAuthData, seller_id: str = "",
+                       next_key: str = "") -> tuple:
+        """List dispute/resolution cases. Returns (results, next_key) for pagination.
+        next_key is a string cursor; pass empty string for first page."""
+        if not seller_id:
+            seller_id = auth.seller_id or self._seller_id or ""
+        params = {"seller_id": seller_id}
+        if next_key:
+            params["next_key"] = next_key
+        r = self._sess.get(
+            f"{BASE}/order/list_my_cases",
+            params=params,
+            headers=auth.build_headers(),
+            timeout=30,
+        )
+        try:
+            j = self._parse(r, "list_my_cases")
+        except APIError:
+            return [], ""
+        payload = j.get("payload") or {}
+        results = payload.get("results") or []
+        nxt = payload.get("next_key") or ""
+        return results, nxt
+
     # ── Worker APIs ───────────────────────────────────────────────────────
 
     def start_deliver(self, order_item_id: str, auth: G2GAuthData,

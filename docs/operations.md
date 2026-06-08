@@ -73,6 +73,7 @@ nohup venv/bin/python scripts/watchdog.py > /tmp/watchdog.log 2>&1 &   # restart
 | Eldo Worker | 8001 | `python -m workers.eldorado_worker` |
 | G2G Worker | 8002 | `python -m workers.g2g_worker` |
 | Coordinator | 8030 | `python -m coordinator.main` |
+| Status Sync | – | `python -m status_sync` (no port — polls every 30m) |
 | Dashboard | 8766 | `python -m dashboard.server` |
 
 ## Startup / Shutdown
@@ -177,6 +178,7 @@ Tat ca logs ra stdout, redirect vao `/tmp/`:
 | Eldo Worker | `/tmp/eldo_worker.log` |
 | G2G Worker | `/tmp/g2g_worker.log` |
 | Coordinator | `/tmp/coordinator.log` |
+| Status Sync | `/tmp/status_sync.log` |
 | Dashboard | `/tmp/dashboard.log` |
 | Watchdog | `/tmp/watchdog.log` |
 
@@ -411,6 +413,82 @@ done
 
 **Luu y khi mo VNC viewer Camoufox cho profile bot**: Khi dong viewer, lock files se ton lai. Truoc 2026-06-04 phai rm thu cong; tu sau khi auth co auto-cleanup, lan capture ke tiep cua auth se tu xoa.
 
+### status_sync — dong bo trang thai marketplace -> ERP
+
+**Muc dich**: Poll trang thai don tu G2G + Eldorado moi 30 phut, push thay doi
+state len ERP webhook `status_update` de cap nhat `workflow_state` cua Sell Order.
+Xu ly cac case bot scanner/worker khong handle: auto-complete sau 3 ngay, dispute
+sau khi complete, cancel trong khi delivering.
+
+**Kien truc**:
+- Poll cheap counts endpoint (G2G `count-my-orders`, Eldo `statesCount`).
+- Khi counts thay doi (tripwire) -> fetch list don state tuong ung -> upsert vao
+  `marketplace_status` (SQLite `data/orders.db`).
+- Neu `prev_state != new_state` -> push len ERP `status_update`.
+- Lan dau chay (DB rong) = **full backfill silent** — insert het state hien tai
+  vao DB, KHONG push ERP (de tranh spam ~10k transitions gia).
+
+**State mapping (bot side -> ERP workflow_state)**:
+
+| Platform state | ERP workflow_state |
+|----------------|--------------------|
+| g2g.completed | Completed |
+| g2g.cancelled | Refunded |
+| g2g.disputed (synthesize tu case open) | Disputed |
+| eldo.Delivered | Delivered |
+| eldo.Completed | Completed |
+| eldo.Canceled | Refunded |
+| eldo.Disputed | Disputed |
+| eldo.Received | (ignored — same as Delivered) |
+| eldo.PendingDelivery | (ignored — trader handles) |
+
+**PROTECTED states** (ERP webhook KHONG override): `Refunded`, `Partially Refunded`,
+`Cancellation Requested`, `Outstanding`, `Payment Pending`. Ly do: cac trang thai
+nay do nhan vien tu set, marketplace state khong duoc de.
+
+**Health check**:
+```bash
+# Counts snapshot da luu chua?
+venv/bin/python -c "
+import sqlite3
+conn = sqlite3.connect('data/orders.db')
+print('counts:')
+for r in conn.execute('SELECT platform, state, count FROM marketplace_state_counts ORDER BY platform, state'):
+    print(' ', r)
+print('total statuses:', conn.execute('SELECT count(*) FROM marketplace_status').fetchone()[0])
+print('pushed (last 24h):', conn.execute(\"SELECT count(*) FROM marketplace_status WHERE last_pushed_at > datetime('now', '-1 day')\").fetchone()[0])
+print('disputes open:', conn.execute(\"SELECT count(*) FROM marketplace_disputes WHERE status='open'\").fetchone()[0])
+conn.close()"
+
+# Heartbeat
+venv/bin/python -c "
+import sqlite3
+conn = sqlite3.connect('data/orders.db')
+for r in conn.execute(\"SELECT service_name, last_beat FROM heartbeat WHERE service_name='status_sync'\"):
+    print(r)
+conn.close()"
+
+# Force run 1 cycle (--once) — useful sau khi sua code
+cd /opt/BotPasteDon && venv/bin/python -m status_sync --once
+```
+
+**Reset / re-backfill (only if necessary)**:
+```bash
+# Xoa snapshot counts -> next cycle se treat la first_run = silent backfill
+venv/bin/python -c "
+import sqlite3
+conn = sqlite3.connect('data/orders.db')
+conn.execute('DELETE FROM marketplace_state_counts')
+conn.execute('DELETE FROM marketplace_status')
+conn.commit()
+conn.close()"
+```
+
+**Khi push ERP fail**: `push_attempts` tang, `last_pushed_at` van NULL. Next
+cycle khi state van la state moi -> retry (vi prev_state trong DB van la state
+cu, no thay state cu != state moi -> push lai). Sau 3 lan 5xx -> bo qua,
+log warning.
+
 ### Tra lai bang chung cho don da Completed (proof khong tu len marketplace)
 
 **Trieu chung**: Don da deliver xong (qty submitted, buyer da nhan), nhung phia
@@ -583,7 +661,7 @@ Tat ca scripts trong `scripts/`. Chia 3 nhom: **server-resident** (chay tren ser
 
 | Script | Muc dich | Khi nao chay |
 |--------|----------|--------------|
-| [`start.sh`](../scripts/start.sh) | Start all 8 services theo thu tu phu thuoc (auth -> workers -> coordinator -> scanners -> dashboard -> watchdog) | Sau reboot server hoac sau full stop |
+| [`start.sh`](../scripts/start.sh) | Start all 9 services theo thu tu phu thuoc (auth -> workers -> coordinator -> scanners -> status_sync -> watchdog -> dashboard) | Sau reboot server hoac sau full stop |
 | [`stop.sh`](../scripts/stop.sh) | Stop all services | Truoc khi reboot hoac maintenance lon |
 | [`watchdog.py`](../scripts/watchdog.py) | Long-running supervisor — check heartbeat moi 30s, restart service neu khong beat trong 90s | Luon chay (tu start.sh) |
 
@@ -612,6 +690,9 @@ Muon xem profile dang trong state gi -> deploy_open_eldo.py + VNC viewer
 Scanner khong tim thay don           -> tail /tmp/eldo_scanner.log + Troubleshooting
 Don da Completed nhung proof khong   -> retry_post_evidence.py <order_id> [<order_id>...]
   toi marketplace -> seller bi giu tien
+Workflow_state SO khong khop          -> tail /tmp/status_sync.log + xem section "status_sync"
+  marketplace (e.g. ERP van Delivered    o tren. Force 1 cycle: venv/bin/python -m status_sync --once
+  nhung G2G da Completed)
 ```
 
 ### Server-only legacy scripts (khong trong repo)

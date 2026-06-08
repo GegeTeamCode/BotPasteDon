@@ -30,6 +30,14 @@ ERP_API_KEY = os.getenv("ERP_API_KEY", "")
 ERP_API_KEY_ELDO = os.getenv("ERP_API_KEY_ELDO", "") or ERP_API_KEY
 ERP_API_KEY_G2G = os.getenv("ERP_API_KEY_G2G", "") or ERP_API_KEY
 
+# ── status_sync ──
+# URL for marketplace state update endpoint on ERP (defaults derived from ERP_WEBHOOK_URL)
+ERP_STATUS_UPDATE_URL = os.getenv("ERP_STATUS_UPDATE_URL", "")
+if not ERP_STATUS_UPDATE_URL and ERP_WEBHOOK_URL:
+    # ERP_WEBHOOK_URL points at .new_order — swap suffix
+    ERP_STATUS_UPDATE_URL = ERP_WEBHOOK_URL.rsplit(".", 1)[0] + ".status_update"
+STATUS_SYNC_INTERVAL_SEC = int(os.getenv("STATUS_SYNC_INTERVAL_SEC", "1800"))  # 30 min
+
 # ── Chrome / Selenium ──
 CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH", "")
 HEADLESS_MODE = os.getenv("HEADLESS_MODE", "false").lower() in ("true", "1", "yes")

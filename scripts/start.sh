@@ -28,6 +28,7 @@ cleanup() {
     pkill -f "workers.eldorado_worker" 2>/dev/null || true
     pkill -f "coordinator.main" 2>/dev/null || true
     pkill -f "scanners.main" 2>/dev/null || true
+    pkill -f "status_sync" 2>/dev/null || true
     pkill -f "watchdog.py" 2>/dev/null || true
     pkill -f "dashboard.server" 2>/dev/null || true
     sleep 3
@@ -38,6 +39,7 @@ cleanup() {
     pkill -9 -f "workers.eldorado_worker" 2>/dev/null || true
     pkill -9 -f "coordinator.main" 2>/dev/null || true
     pkill -9 -f "scanners.main" 2>/dev/null || true
+    pkill -9 -f "status_sync" 2>/dev/null || true
     pkill -9 -f "watchdog.py" 2>/dev/null || true
     pkill -9 -f "dashboard.server" 2>/dev/null || true
     pkill -9 -f chromedriver 2>/dev/null || true
@@ -102,25 +104,30 @@ start_services() {
     nohup $VENV -u -m scanners.main --platform eldorado > $LOG_DIR/eldo_scanner.log 2>&1 &
     log "[6/8] Eldorado scanner started (PID: $!)"
 
-    # 7. Watchdog
-    log "[7/8] Starting watchdog..."
-    nohup $VENV scripts/watchdog.py > $LOG_DIR/watchdog.log 2>&1 &
-    log "[7/8] Watchdog started (PID: $!)"
+    # 7. Status Sync (G2G + Eldo marketplace state → ERP webhook)
+    log "[7/9] Starting status_sync..."
+    nohup $VENV -u -m status_sync > $LOG_DIR/status_sync.log 2>&1 &
+    log "[7/9] Status sync started (PID: $!)"
 
-    # 8. Dashboard
-    log "[8/8] Starting dashboard..."
+    # 8. Watchdog
+    log "[8/9] Starting watchdog..."
+    nohup $VENV scripts/watchdog.py > $LOG_DIR/watchdog.log 2>&1 &
+    log "[8/9] Watchdog started (PID: $!)"
+
+    # 9. Dashboard
+    log "[9/9] Starting dashboard..."
     nohup $VENV -u -m dashboard.server > $LOG_DIR/dashboard.log 2>&1 &
-    log "[8/8] Dashboard started (PID: $!)"
+    log "[9/9] Dashboard started (PID: $!)"
 
     log "All services started"
-    log "Logs: /tmp/{auth6,g2g_worker,eldo_worker,coordinator,g2g_scanner,eldo_scanner,watchdog,dashboard}.log"
+    log "Logs: /tmp/{auth6,g2g_worker,eldo_worker,coordinator,g2g_scanner,eldo_scanner,status_sync,watchdog,dashboard}.log"
 }
 
 # ── Status check ──
 show_status() {
     echo ""
     log "=== Service Status ==="
-    for SVC in "auth.main" "workers.g2g_worker" "workers.eldorado_worker" "coordinator.main" "scanners.main" "watchdog.py" "dashboard.server"; do
+    for SVC in "auth.main" "workers.g2g_worker" "workers.eldorado_worker" "coordinator.main" "scanners.main" "status_sync" "watchdog.py" "dashboard.server"; do
         PID=$(pgrep -f "$SVC" 2>/dev/null || echo "DOWN")
         printf "  %-25s %s\n" "$SVC" "PID: $PID"
     done
