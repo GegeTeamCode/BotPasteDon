@@ -189,6 +189,46 @@ class Database:
             finally:
                 conn.close()
 
+    def mark_erp_synced(self, order_id: str):
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE orders SET erp_synced = 1, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?",
+                    (order_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_unsynced_orders(self, max_retries: int = 50) -> List[Dict]:
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    """SELECT * FROM orders
+                       WHERE erp_synced = 0
+                       AND status NOT IN ("DETECTED", "FAILED")
+                       AND erp_retry_count < ?
+                       ORDER BY created_at ASC""",
+                    (max_retries,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
+    def increment_erp_retry(self, order_id: str):
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE orders SET erp_retry_count = erp_retry_count + 1, updated_at = CURRENT_TIMESTAMP WHERE order_id = ?",
+                    (order_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     def update_heartbeat(self, service_name: str, pid: int):
         with self._lock:
             conn = self._get_conn()
