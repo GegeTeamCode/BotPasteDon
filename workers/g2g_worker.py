@@ -7,9 +7,12 @@ Supports two modes:
 """
 
 import asyncio
+import datetime
+import json
 import os
 import re
 import signal
+import socket
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -25,7 +28,9 @@ from shared.config import (
     CHROME_BINARY_PATH, HEADLESS_MODE, DATABASE_PATH,
     G2G_USE_API, AUTH_SERVICE_URL,
 )
-from shared.constants import ORDER_DELIVERING, ORDER_COMPLETED, ORDER_FAILED
+from shared.constants import (
+    ORDER_DELIVERING, ORDER_COMPLETED, ORDER_FAILED, ORDER_RETRY_PENDING,
+)
 from shared.database import Database
 from shared.driver_manager import get_driver
 from shared.logging_config import setup_logger
@@ -98,6 +103,85 @@ async def _notify_coordinator(order_id: str, thread_id: str, success: bool):
         logger.warning(f"Coordinator notify failed: {e}")
 
 
+# ── Retry/backoff policy ──────────────────────────────────────────────────────
+
+MAX_RETRY_ATTEMPTS = 100
+
+# index = retry_count; clamp at last entry once exhausted.
+RETRY_BACKOFF_SECONDS = (
+    60, 60, 60, 60, 60,           # first 5: 1 min
+    300, 300, 300, 300, 300,       # next 5: 5 min
+    1800, 1800, 1800, 1800, 1800,  # next 5: 30 min
+    3600,                          # cap: 1 hour thereafter
+)
+
+_RETRY_KEYWORDS = (
+    "timeout", "timed out",
+    "name resolution", "name or service not known",
+    "connection reset", "connection refused", "connection aborted",
+    "max retries exceeded", "temporary failure",
+    "remote disconnected", "service unavailable",
+    "502 ", "503 ", "504 ", "500 internal",
+    "broken pipe", "eof occurred",
+)
+
+_TERMINAL_KEYWORDS = (
+    "cannot perform action when order item status",
+    "order item is not in delivering",
+)
+
+
+def _next_backoff_seconds(retry_count: int) -> int:
+    """Return delay before next retry attempt. retry_count is 1-based."""
+    idx = max(0, retry_count - 1)
+    if idx >= len(RETRY_BACKOFF_SECONDS):
+        return RETRY_BACKOFF_SECONDS[-1]
+    return RETRY_BACKOFF_SECONDS[idx]
+
+
+def _classify_error(exc: Exception) -> str:
+    """Return one of: 'auth', 'network', 'terminal', 'unknown'."""
+    msg = str(exc).lower()
+    name = type(exc).__name__.lower()
+
+    if "autherror" in name or "401" in msg or "403" in msg \
+            or "auth service" in msg or "jwt" in msg:
+        return "auth"
+
+    for kw in _TERMINAL_KEYWORDS:
+        if kw in msg:
+            return "terminal"
+
+    # Network-level exception types
+    if isinstance(exc, (ConnectionError, TimeoutError, socket.gaierror, socket.timeout)):
+        return "network"
+
+    for kw in _RETRY_KEYWORDS:
+        if kw in msg:
+            return "network"
+
+    return "unknown"
+
+
+def _utcnow_iso() -> str:
+    return datetime.datetime.utcnow().replace(microsecond=0).isoformat()
+
+
+def _build_retry_payload(task_data: dict, category: str, retry_count: int,
+                        err_msg: str) -> dict:
+    """Construct the retry_data JSON blob persisted on RETRY_PENDING."""
+    delay = _next_backoff_seconds(retry_count)
+    next_dt = datetime.datetime.utcnow() + datetime.timedelta(seconds=delay)
+    return {
+        "task_data": task_data,
+        "category": category,
+        "retry_count": retry_count,
+        "next_retry_at": next_dt.replace(microsecond=0).isoformat(),
+        "last_attempt_at": _utcnow_iso(),
+        "last_error": err_msg,
+    }
+
+
 async def process_task(task_data: dict):
     order_id = task_data["order_id"]
     thread_id = task_data.get("thread_id", "")
@@ -123,23 +207,53 @@ async def process_task(task_data: dict):
         await _notify_coordinator(order_id, thread_id, success=True)
 
     except Exception as e:
-        err_msg = str(e)[:200]
-        is_auth_err = ("AuthError" in type(e).__name__
-                        or "401" in err_msg or "403" in err_msg
-                        or "auth service error" in err_msg.lower()
-                        or "jwt" in err_msg.lower())
-        if is_auth_err:
-            logger.warning(f"Auth error for {order_id} — will retry when JWT refreshes")
-            # Save task data as JSON so retry can pick up files + skip completed steps
-            import json
-            retry_data = json.dumps(task_data)
-            db.update_order_status(order_id, ORDER_FAILED,
-                                   error_message=f"JWT_EXPIRED:{err_msg}",
-                                   retry_data=retry_data)
-        else:
-            logger.error(f"Task error for {order_id}: {e}")
-            db.update_order_status(order_id, ORDER_FAILED, error_message=err_msg)
+        err_msg = str(e)[:500]
+        category = _classify_error(e)
+
+        # Read current retry_count to decide cap. handle_g2g_api mutates
+        # task_data["skip_steps"] in-place when a per-step fails, so it
+        # already carries the resume point.
+        existing = db.get_order(order_id) or {}
+        prev_count = existing.get("retry_count") or 0
+        retry_count = prev_count + 1
+
+        if category == "terminal":
+            logger.error(f"Terminal error for {order_id}: {e}")
+            db.update_order_status(
+                order_id, ORDER_FAILED,
+                error_message=f"TERMINAL:{err_msg}",
+                retry_count=retry_count,
+            )
+            cleanup_files(task_data.get("files", []))
             await _notify_coordinator(order_id, thread_id, success=False)
+        elif retry_count > MAX_RETRY_ATTEMPTS:
+            logger.error(
+                f"Retry cap hit for {order_id} after {retry_count} attempts "
+                f"(category={category}): {err_msg[:200]}"
+            )
+            db.update_order_status(
+                order_id, ORDER_FAILED,
+                error_message=f"RETRY_CAP:{category.upper()}:{err_msg}",
+                retry_count=retry_count,
+            )
+            await _notify_coordinator(order_id, thread_id, success=False)
+        else:
+            payload = _build_retry_payload(task_data, category, retry_count, err_msg)
+            db.mark_retry_attempt(
+                order_id,
+                retry_data_json=json.dumps(payload, ensure_ascii=False),
+                error_message=f"{category.upper()}:{err_msg}",
+                retry_count=retry_count,
+            )
+            delay = _next_backoff_seconds(retry_count)
+            logger.warning(
+                f"[{order_id}] {category} failure (attempt {retry_count}, "
+                f"next in {delay}s, skip_steps={task_data.get('skip_steps', [])}): "
+                f"{err_msg[:160]}"
+            )
+            # Note: do NOT cleanup_files — recovery loop needs them for retry.
+            # Files get cleaned on COMPLETED, TERMINAL, or RETRY_CAP paths above.
+            # Coordinator is not notified — order is in-flight retry, thread stays open.
     finally:
         PROCESSING_TASKS.discard(order_id)
 
@@ -405,50 +519,76 @@ async def run_worker():
             await asyncio.sleep(30)
     asyncio.create_task(heartbeat())
 
-    # Recovery: retry orders that failed due to expired JWT
-    async def recover_auth_failed():
+    # Recovery: pick up orders in RETRY_PENDING whose next_retry_at is due.
+    # Also picks up legacy FAILED orders with old "JWT_EXPIRED:" prefix so
+    # the in-flight queue from the previous deployment doesn't get stranded.
+    async def recover_pending_retries():
         while not _shutdown_event.is_set():
             await asyncio.sleep(60)
             if not (G2G_USE_API and api_client and auth_manager):
                 continue
-            failed = db.get_orders_by_status("g2g", ORDER_FAILED)
-            for order in failed:
-                err = order.get("error_message", "")
-                if not err.startswith("JWT_EXPIRED:"):
-                    continue
+
+            now = datetime.datetime.utcnow()
+            pending = db.get_orders_by_status("g2g", ORDER_RETRY_PENDING)
+            # Backward-compat sweep: legacy auth-only retries still in FAILED.
+            legacy = [
+                o for o in db.get_orders_by_status("g2g", ORDER_FAILED)
+                if (o.get("error_message") or "").startswith("JWT_EXPIRED:")
+            ]
+
+            for order in pending + legacy:
                 order_id = order["order_id"]
                 if order_id in PROCESSING_TASKS:
                     continue
-                # Check if auth is healthy before retrying
-                try:
-                    auth = await auth_manager.get_auth()
-                except Exception:
-                    break  # Still no JWT, stop retrying
-                logger.info(f"Retrying JWT-failed order: {order_id}")
 
-                # Restore full task data from retry_data if available
-                import json
                 retry_json = order.get("retry_data")
-                if retry_json:
-                    try:
-                        task_data = json.loads(retry_json)
-                        logger.info(f"Restored task data with {len(task_data.get('files', []))} files, skip={task_data.get('skip_steps', [])}")
-                    except Exception:
-                        task_data = None
+                if not retry_json:
+                    continue
+                try:
+                    payload = json.loads(retry_json)
+                except Exception:
+                    continue
+
+                # Normalize: new format has "task_data" key; legacy is raw task_data.
+                if isinstance(payload, dict) and "task_data" in payload:
+                    task_data = payload.get("task_data") or {}
+                    category = payload.get("category", "auth")
+                    next_at = payload.get("next_retry_at")
                 else:
-                    task_data = None
+                    task_data = payload if isinstance(payload, dict) else {}
+                    category = "auth"
+                    next_at = None
 
-                if not task_data:
-                    task_data = {
-                        "order_id": order_id,
-                        "order_url": order.get("order_url", ""),
-                        "delivery_qty": order.get("quantity", "1"),
-                        "files": [],
-                        "thread_id": order.get("discord_thread_id", ""),
-                    }
+                # Respect backoff schedule.
+                if next_at:
+                    try:
+                        due = datetime.datetime.fromisoformat(next_at)
+                        if due > now:
+                            continue
+                    except Exception:
+                        pass
 
+                # Auth-category requires healthy JWT before retry; if auth still
+                # broken, defer the whole sweep — every order would hit the same wall.
+                if category == "auth":
+                    try:
+                        await auth_manager.get_auth()
+                    except Exception:
+                        logger.info("Auth still unhealthy — deferring retry sweep")
+                        break
+
+                if not task_data.get("order_id"):
+                    task_data["order_id"] = order_id
+                if "thread_id" not in task_data:
+                    task_data["thread_id"] = order.get("discord_thread_id", "") or ""
+
+                logger.info(
+                    f"Retrying {order_id} (category={category}, "
+                    f"attempt={(order.get('retry_count') or 0) + 1}, "
+                    f"skip={task_data.get('skip_steps', [])})"
+                )
                 asyncio.create_task(process_task(task_data))
-    asyncio.create_task(recover_auth_failed())
+    asyncio.create_task(recover_pending_retries())
 
     await _shutdown_event.wait()
 

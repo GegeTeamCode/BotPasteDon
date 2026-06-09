@@ -211,10 +211,13 @@ class Database:
         with self._lock:
             conn = self._get_conn()
             try:
-                # Remove completed/failed orders older than max_age
+                # Remove completed orders older than max_age.
+                # FAILED and RETRY_PENDING are preserved: FAILED is audit trail for
+                # terminal failures the operator must inspect; RETRY_PENDING is
+                # in-flight evidence retries that must survive across cycles.
                 conn.execute(
                     """DELETE FROM orders
-                       WHERE status IN ('COMPLETED', 'FAILED')
+                       WHERE status = 'COMPLETED'
                        AND updated_at < datetime('now', ?)""",
                     (f"-{max_age_hours} hours",),
                 )
@@ -223,6 +226,27 @@ class Database:
                     """DELETE FROM orders
                        WHERE status = 'DETECTED'
                        AND updated_at < datetime('now', '-24 hours')""",
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def mark_retry_attempt(self, order_id: str, retry_data_json: str,
+                           error_message: str, retry_count: int):
+        """Update order to RETRY_PENDING with new retry context.
+        Keeps status as RETRY_PENDING and bumps retry_count."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """UPDATE orders SET
+                           status = 'RETRY_PENDING',
+                           retry_data = ?,
+                           error_message = ?,
+                           retry_count = ?,
+                           updated_at = CURRENT_TIMESTAMP
+                       WHERE order_id = ?""",
+                    (retry_data_json, error_message, retry_count, order_id),
                 )
                 conn.commit()
             finally:
