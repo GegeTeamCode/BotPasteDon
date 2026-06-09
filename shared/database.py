@@ -102,6 +102,17 @@ class Database:
                         raw_data TEXT,
                         PRIMARY KEY (platform, case_id)
                     );
+
+                    CREATE TABLE IF NOT EXISTS pending_dispatches (
+                        order_id TEXT PRIMARY KEY,
+                        worker_url TEXT NOT NULL,
+                        task_data TEXT NOT NULL,
+                        attempt_count INTEGER DEFAULT 0,
+                        last_attempt_at DATETIME,
+                        next_retry_at DATETIME,
+                        last_error TEXT,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
                 """)
                 conn.commit()
 
@@ -226,6 +237,71 @@ class Database:
                     """DELETE FROM orders
                        WHERE status = 'DETECTED'
                        AND updated_at < datetime('now', '-24 hours')""",
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    # ── pending_dispatches (coordinator → worker dispatch retry) ──────────────
+
+    def queue_dispatch(self, order_id: str, worker_url: str, task_data_json: str):
+        """Enqueue a task that failed to dispatch. INSERT OR REPLACE — a fresh
+        click on the button resets the retry counter."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """INSERT OR REPLACE INTO pending_dispatches
+                       (order_id, worker_url, task_data, attempt_count,
+                        last_attempt_at, next_retry_at, last_error, created_at)
+                       VALUES (?, ?, ?, 0, NULL, datetime('now'), NULL,
+                               CURRENT_TIMESTAMP)""",
+                    (order_id, worker_url, task_data_json),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def get_due_dispatches(self) -> List[Dict]:
+        """Pending dispatches whose next_retry_at is now-or-past (NULL = due)."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    """SELECT * FROM pending_dispatches
+                       WHERE next_retry_at IS NULL
+                          OR next_retry_at <= datetime('now')
+                       ORDER BY created_at ASC""",
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
+    def mark_dispatch_attempt(self, order_id: str, error: str,
+                              next_retry_at_iso: str, attempt_count: int):
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    """UPDATE pending_dispatches
+                       SET attempt_count = ?,
+                           last_attempt_at = CURRENT_TIMESTAMP,
+                           next_retry_at = ?,
+                           last_error = ?
+                       WHERE order_id = ?""",
+                    (attempt_count, next_retry_at_iso, error, order_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+    def remove_dispatch(self, order_id: str):
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "DELETE FROM pending_dispatches WHERE order_id = ?",
+                    (order_id,),
                 )
                 conn.commit()
             finally:

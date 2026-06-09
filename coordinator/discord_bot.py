@@ -3,6 +3,8 @@
 In the future, replace this module with a Web API (FastAPI/Flask) without changing Scanners or Workers.
 """
 
+import datetime
+import json
 import os
 import re
 import asyncio
@@ -30,8 +32,25 @@ logger = setup_logger("coordinator")
 WORKER_ELDO_URL = os.getenv("WORKER_ELDO_URL", "http://localhost:8001")
 WORKER_G2G_URL = os.getenv("WORKER_G2G_URL", "http://localhost:8002")
 
+# Dispatch retry policy: aligns with workers/g2g_worker.py PR1 schedule.
+MAX_DISPATCH_ATTEMPTS = 100
+DISPATCH_BACKOFF_SECONDS = (
+    60, 60, 60, 60, 60,
+    300, 300, 300, 300, 300,
+    1800, 1800, 1800, 1800, 1800,
+    3600,
+)
+
 _shutdown_event = asyncio.Event()
 _bot_instance = None  # Global ref for lock_thread callback
+
+
+def _dispatch_backoff(attempt_count: int) -> int:
+    """attempt_count is 1-based: 1 = first retry after initial failure."""
+    idx = max(0, attempt_count - 1)
+    if idx >= len(DISPATCH_BACKOFF_SECONDS):
+        return DISPATCH_BACKOFF_SECONDS[-1]
+    return DISPATCH_BACKOFF_SECONDS[idx]
 
 
 # ── DeliveryView (Discord buttons) ──
@@ -158,6 +177,29 @@ class DeliveryView(discord.ui.View):
         # Dispatch to Worker via HTTP API
         success = await dispatch_task(self.worker_base_url, task_data)
         if not success:
+            # Persist the task so a background loop can keep trying after
+            # the worker recovers (restart, transient outage, etc.). Files
+            # already on disk in PROOF_DIR are referenced by path inside
+            # task_data and survive coordinator restarts.
+            if self.db:
+                try:
+                    self.db.queue_dispatch(
+                        order_id,
+                        self.worker_base_url,
+                        json.dumps(task_data, ensure_ascii=False),
+                    )
+                    await interaction.followup.send(
+                        "⏳ Worker chưa phản hồi — đã đưa vào hàng đợi, "
+                        "hệ thống sẽ tự retry.",
+                        ephemeral=False,
+                    )
+                    logger.warning(
+                        f"Dispatch failed for {order_id} — queued for retry "
+                        f"(worker={self.worker_base_url})"
+                    )
+                    return
+                except Exception as e:
+                    logger.error(f"Failed to queue dispatch for {order_id}: {e}")
             await interaction.followup.send("❌ Không thể gửi task đến Worker!", ephemeral=True)
 
 
@@ -332,6 +374,64 @@ class CoordinatorBot(commands.Bot):
             logger.error(f"Failed to update fast delivery buttons: {e}")
 
 
+async def _retry_pending_dispatches(db: Database):
+    """Background loop: keep dispatching tasks that previously failed to
+    reach the worker. Survives coordinator restarts because the queue is
+    SQLite-backed. Drops after MAX_DISPATCH_ATTEMPTS and logs an error so
+    the operator can investigate manually."""
+    while not _shutdown_event.is_set():
+        try:
+            await asyncio.sleep(30)
+            due = db.get_due_dispatches()
+            for row in due:
+                order_id = row["order_id"]
+                worker_url = row["worker_url"]
+                attempt = (row.get("attempt_count") or 0) + 1
+                try:
+                    task_data = json.loads(row["task_data"])
+                except Exception as e:
+                    logger.error(f"Bad task_data JSON for {order_id}, dropping: {e}")
+                    db.remove_dispatch(order_id)
+                    continue
+
+                ok = await dispatch_task(worker_url, task_data)
+                if ok:
+                    db.remove_dispatch(order_id)
+                    logger.info(
+                        f"Queued dispatch succeeded for {order_id} "
+                        f"on attempt {attempt}"
+                    )
+                    continue
+
+                if attempt >= MAX_DISPATCH_ATTEMPTS:
+                    logger.error(
+                        f"Dispatch retry cap hit for {order_id} after "
+                        f"{attempt} attempts — dropping from queue"
+                    )
+                    db.remove_dispatch(order_id)
+                    continue
+
+                delay = _dispatch_backoff(attempt)
+                # SQLite-friendly format: space separator (datetime('now') style),
+                # so string comparison against datetime('now') sorts correctly.
+                next_at = (
+                    datetime.datetime.utcnow()
+                    + datetime.timedelta(seconds=delay)
+                ).strftime("%Y-%m-%d %H:%M:%S")
+                db.mark_dispatch_attempt(
+                    order_id,
+                    error=f"worker unreachable (attempt {attempt})",
+                    next_retry_at_iso=next_at,
+                    attempt_count=attempt,
+                )
+                logger.warning(
+                    f"Dispatch retry {attempt} failed for {order_id} — "
+                    f"next in {delay}s"
+                )
+        except Exception as e:
+            logger.error(f"Dispatch retry loop error: {e}")
+
+
 async def _http_server():
     """Lightweight HTTP server for worker callbacks."""
     from aiohttp import web
@@ -383,6 +483,7 @@ def main():
                 db.update_heartbeat("coordinator", os.getpid())
                 await asyncio.sleep(30)
         asyncio.create_task(heartbeat())
+        asyncio.create_task(_retry_pending_dispatches(db))
 
         await bot.start(BOT_TOKEN)
 
