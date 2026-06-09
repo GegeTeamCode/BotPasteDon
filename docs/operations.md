@@ -713,44 +713,80 @@ conn.close()
 
 ## Scripts Catalog
 
-Tat ca scripts trong `scripts/`. Chia 3 nhom: **server-resident** (chay tren server), **client-side ops** (chay tu Windows host qua paramiko), **helper modules** (script con duoc upload boi script khac).
+Tat ca scripts trong `scripts/`. Naming convention:
+- **Khong prefix** = production / ops tool, run frequently.
+- **Prefix `_`** = throwaway-style helper: smoke test, diagnostic, discovery template. Giu de re-use khi can.
 
 ### Server-resident — chay tren server, da co trong start.sh
 
 | Script | Muc dich | Khi nao chay |
 |--------|----------|--------------|
-| [`start.sh`](../scripts/start.sh) | Start all 9 services theo thu tu phu thuoc (auth -> workers -> coordinator -> scanners -> status_sync -> watchdog -> dashboard) | Sau reboot server hoac sau full stop |
-| [`stop.sh`](../scripts/stop.sh) | Stop all services | Truoc khi reboot hoac maintenance lon |
+| [`start.sh`](../scripts/start.sh) | Start all 9 services theo thu tu phu thuoc (auth → workers → coordinator → scanners → status_sync → watchdog → dashboard). Mac dinh chay `cleanup()` truoc khi start; pass `--no-clean` de skip. | Sau reboot server hoac sau full stop |
+| [`stop.sh`](../scripts/stop.sh) | Stop all 9 services in reverse order (watchdog truoc, auth cuoi). Clean chromedriver/camoufox + 4 profile locks + free 5 ports. Filter bash launcher de tranh self-match. | Truoc khi reboot hoac maintenance lon |
 | [`watchdog.py`](../scripts/watchdog.py) | Long-running supervisor — check heartbeat moi 30s, restart service neu khong beat trong 90s | Luon chay (tu start.sh) |
 
 ### Client-side ops — chay tu Windows host, dung paramiko vao server
 
 | Script | Muc dich | Output |
 |--------|----------|--------|
-| [`check_all_processes.py`](../scripts/check_all_processes.py) | Audit toan canh: liet ke 8 service, PID (chi count python, skip bash launcher), port, heartbeat HH:MM:SS. Bao `OK`/`DOWN`/`DUP xN`/`NO-PORT`. Cung in `/health` json. | Bang summary + verdict cuoi |
-| [`deploy_auth_patch.py`](../scripts/deploy_auth_patch.py) | Deploy `auth/main.py`: upload via SFTP -> backup -> stop watchdog -> stop auth/browsers -> plant lock files de verify cleanup -> start auth -> trigger /auth/eldo + /auth/g2g -> in audit. | Step-by-step log |
+| [`check_all_processes.py`](../scripts/check_all_processes.py) | Audit toan canh: liet ke 8 service, PID (chi count python, skip bash launcher), port, heartbeat. Bao `OK`/`DOWN`/`DUP xN`/`NO-PORT`. Cung in `/health` json. | Bang summary + verdict cuoi |
+| [`deploy_auth_patch.py`](../scripts/deploy_auth_patch.py) | Deploy `auth/main.py`: upload via SFTP → backup → stop watchdog → stop auth/browsers → plant lock files de verify cleanup → start auth → trigger /auth/eldo + /auth/g2g → in audit. | Step-by-step log |
+| [`deploy_workers.py`](../scripts/deploy_workers.py) | Deploy `workers/*.py` qua SFTP. Stop watchdog → kill workers → upload → start workers → restart watchdog → in audit + reachability probe. | Step log + audit table |
 | [`deploy_open_eldo.py`](../scripts/deploy_open_eldo.py) | Launch Camoufox visible voi profile `chrome_profile_eldo` (main) tren Xvfb :99. Dung de xem session qua VNC. | Path log + connect info |
-| [`open_eldo_vnc.py`](../scripts/open_eldo_vnc.py) | (Helper) — Script chay tren server, mo Camoufox headless=False, persistent_context tren profile main, dieu huong eldorado.gg, ngu vo han. SCP-deployed bang `deploy_open_eldo.py`. Khong chay truc tiep tu host. | – |
-| [`unlock_profiles.py`](../scripts/unlock_profiles.py) | Manual fallback khi auth tat hoan toan va profile co lock cu: pkill leftover camoufox + xoa Firefox/Chrome lock files cua all profiles -> trigger /auth/eldo. Sau **2026-06-04** it khi can vi auth co auto-cleanup. | Cleanup log |
-| [`retry_post_evidence.py`](../scripts/retry_post_evidence.py) | Re-trigger ERP `post_evidence_to_marketplace` cho 1+ don da Completed nhung proof khong toi marketplace (worker fail truoc do). SSH ERP + tail worker log + goi voi `skip_steps=['qty']` per SO. Xem chi tiet o muc "Tra lai bang chung". | Bang verdict per order |
-| [`deploy_workers.py`](../scripts/deploy_workers.py) | Deploy `workers/*.py` qua SFTP. Stop watchdog -> kill workers -> upload -> start workers -> restart watchdog -> in audit + reachability probe. | Step log + audit table |
+| [`unlock_profiles.py`](../scripts/unlock_profiles.py) | Manual fallback khi auth tat hoan toan va profile co lock cu: pkill leftover camoufox + xoa Firefox/Chrome lock files cua all profiles → trigger /auth/eldo. Sau **2026-06-04** it khi can vi auth co auto-cleanup. | Cleanup log |
+| [`retry_post_evidence.py`](../scripts/retry_post_evidence.py) | Re-trigger ERP `post_evidence_to_marketplace` cho 1+ don da Completed nhung proof khong toi marketplace. Goi voi `skip_steps=['qty']` per SO. Xem muc "Tra lai bang chung". | Bang verdict per order |
+
+### Server helpers — SCP'd len /tmp truoc khi run
+
+| Script | Muc dich |
+|--------|----------|
+| [`open_eldo_vnc.py`](../scripts/open_eldo_vnc.py) | Mo Camoufox headless=False, persistent_context tren profile main, ngu vo han. SCP-deploy bang `deploy_open_eldo.py`. |
+| [`open_eldo_vnc_profile.py`](../scripts/open_eldo_vnc_profile.py) | Bien the cua tren — accept profile name CLI arg (e.g. `bak1`, `bak2`). Dung trong quy trinh re-login VNC sau khi refresh_token het han. |
+
+### Smoke tests — chay sau khi sua code de regression
+
+| Script | Test |
+|--------|------|
+| [`_smoke_retry_pending.py`](../scripts/_smoke_retry_pending.py) | PR1: error classifier (auth/network/terminal/unknown), backoff schedule, DB roundtrip (mark_retry_attempt + cleanup_old_orders exemption), state transitions. |
+| [`_smoke_dispatch_queue.py`](../scripts/_smoke_dispatch_queue.py) | PR2: coordinator dispatch retry queue — INSERT OR REPLACE reset, due-poll, mark_dispatch_attempt, backoff cap. |
+| [`_smoke_g2g_refresh.py`](../scripts/_smoke_g2g_refresh.py) | PR3: G2G backend refresh — `_g2g_backend_refresh` guards, `_jwt_claim` decode, `G2GAuth._try_backend_refresh` no-data path. |
+
+Chay tu Windows host: `python scripts/_smoke_<name>.py`. Khong can server, khong can network.
+
+### Discovery templates — re-use khi can reverse-engineer marketplace moi
+
+Su dung theo flow trong [`docs/marketplace_auth.md`](marketplace_auth.md) muc "Methodology cho marketplace moi".
+
+| Script | Vai tro |
+|--------|---------|
+| [`_diag_missing_evidence.py`](../scripts/_diag_missing_evidence.py) | Pattern: query DB orders + grep `/tmp/*.log` cho 1 hoac nhieu order_id. Adapt cho debug stuck orders bat ky. |
+| [`_sniff_g2g_refresh.py`](../scripts/_sniff_g2g_refresh.py) | CDP Network sniff template: clone profile, mo Chrome, navigate page authenticated, dump all request URL chua keyword auth/refresh/token. Reuse cho marketplace moi de find endpoint. |
+| [`_g2g_js_grep.py`](../scripts/_g2g_js_grep.py) + [`_g2g_js_grep_remote.py`](../scripts/_g2g_js_grep_remote.py) | JS bundle decompile template: fetch tat ca `.js` cua marketplace, grep keyword. Tim exact body schema cua endpoint. |
+| [`_probe_g2g_refresh.py`](../scripts/_probe_g2g_refresh.py) | Blind probe template: send GET/POST den candidate URLs voi cookies hien tai, phan biet 404/401/403/500. |
+| [`_probe_refresh_access_final.py`](../scripts/_probe_refresh_access_final.py) | Confirm-endpoint template: POST voi body day du, decode response, compare JWT iat/exp tu confirm refresh thanh cong. |
 
 ### Khi nao dung script nao
 
 ```
-Trien khai code moi cho auth        -> deploy_auth_patch.py
-Trien khai code moi cho worker      -> (chua co script chuyen, tham khao deploy_auth_patch.py)
-Kiem tra he thong dang on khong     -> check_all_processes.py
-Auth Eldo bi 401 mai khong khoi     -> 1) check_all_processes.py 2) xem /tmp/auth*.log
-                                       3) restart auth (xem "Restart Auth Service")
-                                       4) neu van fail: unlock_profiles.py
-Muon xem profile dang trong state gi -> deploy_open_eldo.py + VNC viewer
-Scanner khong tim thay don           -> tail /tmp/eldo_scanner.log + Troubleshooting
-Don da Completed nhung proof khong   -> retry_post_evidence.py <order_id> [<order_id>...]
-  toi marketplace -> seller bi giu tien
-Workflow_state SO khong khop          -> tail /tmp/status_sync.log + xem section "status_sync"
-  marketplace (e.g. ERP van Delivered    o tren. Force 1 cycle: venv/bin/python -m status_sync --once
-  nhung G2G da Completed)
+Trien khai code moi cho auth        → deploy_auth_patch.py
+Trien khai code moi cho worker      → deploy_workers.py
+Kiem tra he thong dang on khong     → check_all_processes.py
+Auth Eldo bi 401 mai khong khoi     → 1) check_all_processes.py
+                                      2) xem /tmp/auth*.log
+                                      3) restart auth (muc "Restart Auth Service")
+                                      4) neu van fail: unlock_profiles.py
+Muon xem profile dang trong state gi → deploy_open_eldo.py + VNC viewer
+Re-login Eldo (VNC, 3 profile)        → deploy_open_eldo.py (main),
+                                       open_eldo_vnc_profile.py bak1/bak2
+Scanner khong tim thay don           → tail /tmp/{platform}_scanner.log + Troubleshooting
+Don da Completed nhung proof khong   → retry_post_evidence.py <order_id> [...]
+  toi marketplace → seller bi giu tien
+Workflow_state SO khong khop         → tail /tmp/status_sync.log + muc "status_sync".
+  marketplace                          Force 1 cycle: venv/bin/python -m status_sync --once
+Sua code: regression check truoc khi → _smoke_retry_pending.py / _smoke_dispatch_queue.py
+  deploy                               / _smoke_g2g_refresh.py
+Reverse-engineer marketplace moi     → docs/marketplace_auth.md "Methodology"
+                                       + _sniff_*.py + _g2g_js_grep.py + _probe_*.py
 ```
 
 ### Server-only legacy scripts (khong trong repo)
