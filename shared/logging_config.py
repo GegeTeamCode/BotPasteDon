@@ -2,7 +2,18 @@
 
 import logging
 import sys
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
+
+# Server runs UTC. Operators and ERP are in Vietnam (Asia/Ho_Chi_Minh, UTC+7).
+# Stamp logs in local time so timestamps match wall-clock when grepping during
+# incidents. Use a fixed offset (not zoneinfo) — Vietnam has no DST.
+LOG_TZ = timezone(timedelta(hours=7))
+
+
+def _tz_converter(timestamp):
+    """logging.Formatter.converter hook — returns time.struct_time in UTC+7."""
+    return datetime.fromtimestamp(timestamp, tz=LOG_TZ).timetuple()
 
 
 class _FlushHandler(logging.StreamHandler):
@@ -22,8 +33,9 @@ def setup_logger(name: str, log_file: str = None) -> logging.Logger:
 
     fmt = logging.Formatter(
         "[%(asctime)s][%(name)s] %(levelname)s: %(message)s",
-        datefmt="%H:%M:%S",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
+    fmt.converter = _tz_converter
 
     # stdout handler — flushes immediately so nohup logs appear in real-time
     stream_handler = _FlushHandler(sys.stdout)
