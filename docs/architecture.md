@@ -121,6 +121,15 @@ State mapping → ERP `workflow_state`:
 
 PROTECTED workflow states ERP webhook KHONG override: `Refunded`, `Partially Refunded`, `Cancellation Requested`, `Outstanding`, `Payment Pending`.
 
+**ERP-side `status_update` handler safety layers** (gege_custom `api/botpastedon.py::status_update`, deployed 2026-06-10):
+
+1. **PROTECTED check** — current state in the set above → return `protected`, no mutation.
+2. **BLOCK check** — current state in `_BLOCK_CURRENT_STATES = {"In Delivery"}` → return `manual_required`, log Warning. A trader is actively delivering and holds inventory locks; bot must not jump in.
+3. **Whitelist check** — `_SAFE_TRANSITIONS = {Delivered: {Completed, Disputed, Refunded}, Outstanding: {Completed, Refunded}, Completed: {Disputed}, Disputed: {Refunded, Completed}}`. Anything outside (e.g., source=Queued/Claimed/Evidence Uploaded) → `unsafe_transition`, log Warning.
+4. **Apply** — write via `frappe.db.set_value` (bypasses `save()`'s workflow validation, which would otherwise raise `PermissionError` because the webhook runs as Guest and the `_doc_before_save` snapshot doesn't carry `ignore_permissions`). Safe because the whitelisted targets have no business hooks in `Sell Order.before_save`.
+
+Every outcome (except `no_change` and `no_so` — too noisy) writes a `WS Activity Log` row with `action="status_update"`, status Info/Warning, full payload. Search there for monitoring + audit.
+
 ### dashboard/
 
 **`dashboard/server.py`** — aiohttp web server (port 8766).

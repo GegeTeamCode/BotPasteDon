@@ -504,6 +504,31 @@ sau khi complete, cancel trong khi delivering.
 `Cancellation Requested`, `Outstanding`, `Payment Pending`. Ly do: cac trang thai
 nay do nhan vien tu set, marketplace state khong duoc de.
 
+**ERP-side safety layers** (2026-06-10, `gege_custom/api/botpastedon.py::status_update`):
+
+| Layer | Check | Verdict | Log level |
+|-------|-------|---------|-----------|
+| 1 | current ∈ PROTECTED | `protected` | Info |
+| 2 | current ∈ `{"In Delivery"}` (BLOCK) | `manual_required` | **Warning** |
+| 3 | (current, target) ∉ `_SAFE_TRANSITIONS` whitelist | `unsafe_transition` | **Warning** |
+| 4 | All checks pass | `updated` via `db.set_value` | Info |
+
+`_SAFE_TRANSITIONS`: `Delivered → {Completed, Disputed, Refunded}`, `Outstanding → {Completed, Refunded}`, `Completed → {Disputed}`, `Disputed → {Refunded, Completed}`. Anything else (Queued/Claimed/Evidence Uploaded/etc.) as source → `unsafe_transition`.
+
+**Why `db.set_value` not `save()`**: webhook runs as Guest (allow_guest=True). `save()` triggers `validate_workflow → get_transitions → check_permission("read")` on the pre-save snapshot which doesn't carry `flags.ignore_permissions`, so it raises PermissionError. Safe to skip `save()` because the 4 whitelisted targets (Completed/Disputed/Refunded) have NO branch in `Sell Order.before_save`.
+
+**Monitor operator-required cases**:
+
+In ERP UI → WS Activity Log → filter `action = "status_update"` `status = "Warning"`. Each row carries the SO name, current→would_be transition, and the marketplace payload that triggered it.
+
+```sql
+-- Server-side equivalent
+SELECT name, bot_id, detail, reference_sell_order, creation
+FROM `tabWS Activity Log`
+WHERE action = 'status_update' AND status = 'Warning'
+ORDER BY creation DESC LIMIT 50;
+```
+
 **Health check**:
 ```bash
 # Counts snapshot da luu chua?
