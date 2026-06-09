@@ -161,6 +161,15 @@ def _jwt_exp(token: str):
         return None
 
 
+def _jwt_claim(token: str, claim: str):
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return json.loads(base64.urlsafe_b64decode(payload)).get(claim)
+    except Exception:
+        return None
+
+
 def _find_local_chromedriver():
     """Locate chromedriver binary in ~/.wdm without invoking webdriver_manager.
 
@@ -331,6 +340,40 @@ class G2GAuth(PlatformAuth):
         self._consecutive_failures = 0
         self._last_failure_time = 0
         self._captcha_until = 0  # timestamp: skip auto-login until this time
+
+    def _try_backend_refresh(self) -> Optional[dict]:
+        """Mint a fresh JWT via the G2G refresh endpoint — no browser. Only
+        works after a prior successful capture (we need refresh_token,
+        active_device_token, long_lived_token cookies + current JWT for sub)."""
+        if not self.data:
+            return None
+        cur_jwt = self.data.get("jwt_token") or ""
+        cookies = self.data.get("cookies") or {}
+        if not cur_jwt or not cookies.get("refresh_token"):
+            return None
+        result = _g2g_backend_refresh(cur_jwt, cookies,
+                                       self.data.get("user_agent", DEFAULT_USER_AGENT))
+        if not result:
+            return None
+        new_jwt = result["jwt_token"]
+        new_cookies = result["cookies"]
+        # Validate the new JWT is decodable and not expired.
+        exp = _jwt_exp(new_jwt)
+        if not exp or exp <= time.time():
+            logger.warning("[G2G] backend refresh returned JWT but exp invalid/past")
+            return None
+        self.data = {
+            "jwt_token": new_jwt,
+            "cookies": new_cookies,
+            "user_agent": self.data.get("user_agent", DEFAULT_USER_AGENT),
+        }
+        self.captured_at = time.time()
+        self._consecutive_failures = 0
+        logger.info(
+            "[G2G] backend refresh OK | new JWT exp=%dmin | %d cookies",
+            int((exp - time.time()) / 60), len(new_cookies),
+        )
+        return self.data
 
     def _auto_login(self) -> bool:
         """Attempt auto-login when session expired. Returns True if login succeeded."""
@@ -553,6 +596,16 @@ class G2GAuth(PlatformAuth):
             return False
 
     def capture(self) -> dict:
+        # Fast path: try backend refresh first if we already have a JWT bundle.
+        # ~1s HTTP call vs ~30-60s Selenium full capture. Falls through to the
+        # browser path only on first capture or when refresh_token has expired.
+        if self.data and self.data.get("jwt_token") and self.data.get("cookies", {}).get("refresh_token"):
+            logger.info("[G2G] Trying backend refresh (no browser)")
+            refreshed = self._try_backend_refresh()
+            if refreshed:
+                return refreshed
+            logger.info("[G2G] Backend refresh failed — falling back to browser")
+
         # Back off if capture keeps failing — avoid Chrome instance exhaustion
         if self._consecutive_failures >= 3:
             since_last = time.time() - self._last_failure_time
@@ -680,6 +733,86 @@ def _eldo_api_probe(cookies: dict, xsrf: str, user_agent: str = "",
         return r.status_code == 200
     except Exception:
         return False
+
+
+G2G_REFRESH_URL = "https://sls.g2g.com/user/refresh_access"
+
+
+def _g2g_backend_refresh(jwt: str, cookies: dict, user_agent: str = "") -> Optional[dict]:
+    """POST to G2G's own JWT refresh endpoint. Body schema (discovered from
+    /js/app.*.js bundle):
+      {user_id, refresh_token, active_device_token, long_lived_token}
+    Response 200 payload:
+      {access_token, access_token_exp, refresh_token, refresh_token_exp,
+       active_device_token, active_device_token_exp,
+       long_lived_token, long_lived_token_exp}
+    All three *_token cookies are returned with rolling expiries, so as long
+    as we refresh inside the refresh_token window (~12 days, slides every
+    call) we can mint forever without re-opening Chrome.
+
+    Returns {"jwt_token": <new>, "cookies": {<updated cookies>}} on success,
+    else None.
+    """
+    if not jwt:
+        logger.debug("[G2G] backend refresh skipped — no current JWT")
+        return None
+    user_id = _jwt_claim(jwt, "sub")
+    if not user_id:
+        logger.debug("[G2G] backend refresh skipped — JWT missing sub")
+        return None
+    rt = cookies.get("refresh_token")
+    if not rt:
+        logger.debug("[G2G] backend refresh skipped — no refresh_token cookie")
+        return None
+
+    from curl_cffi import requests as _cffi
+    cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    headers = {
+        "user-agent": user_agent or DEFAULT_USER_AGENT,
+        "accept": "application/json, text/plain, */*",
+        "origin": "https://www.g2g.com",
+        "referer": "https://www.g2g.com/",
+        "content-type": "application/json",
+        "authorization": f"Bearer {jwt}",
+        "cookie": cookie_header,
+    }
+    body = {
+        "user_id": user_id,
+        "refresh_token": rt,
+        "active_device_token": cookies.get("active_device_token", ""),
+        "long_lived_token": cookies.get("long_lived_token", ""),
+    }
+    try:
+        r = _cffi.post(G2G_REFRESH_URL, headers=headers, json=body,
+                       timeout=15, impersonate="chrome120")
+    except Exception as e:
+        logger.warning("[G2G] backend refresh exception: %s", e)
+        return None
+    if r.status_code != 200:
+        body_preview = (r.text or "")[:200]
+        logger.warning("[G2G] backend refresh HTTP %d | body=%s",
+                       r.status_code, body_preview)
+        return None
+    try:
+        j = r.json()
+    except Exception as e:
+        logger.warning("[G2G] backend refresh 200 but not JSON: %s", e)
+        return None
+    if j.get("code") != 2000:
+        logger.warning("[G2G] backend refresh code=%s messages=%s",
+                       j.get("code"), j.get("messages"))
+        return None
+    payload = j.get("payload") or {}
+    new_jwt = payload.get("access_token") or ""
+    if not new_jwt:
+        logger.warning("[G2G] backend refresh OK but payload missing access_token")
+        return None
+    new_cookies = dict(cookies)
+    for ck in ("refresh_token", "active_device_token", "long_lived_token"):
+        v = payload.get(ck)
+        if v:
+            new_cookies[ck] = v
+    return {"jwt_token": new_jwt, "cookies": new_cookies}
 
 
 def _eldo_backend_refresh(cookies: dict, xsrf_token: str, user_agent: str = "",
