@@ -48,7 +48,7 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 
 **`auth/main.py`** — HTTP service (aiohttp, port 8010) quan ly browser sessions.
 
-- **G2G**: Chrome headless + CDP capture JWT tu network requests. JWT song 15 phut, capture moi 13 phut.
+- **G2G**: Two-tier (backend refresh `POST sls.g2g.com/user/refresh_access` ~1s + Chrome+CDP fallback ~30-60s). JWT song 15 phut, refresh moi 13 phut.
 - **Eldorado**: Camoufox (anti-detect Firefox) capture cookies + XSRF token. 3 profiles: main, bak1, bak2 — rotate khi profile fail.
 - Endpoints: `GET /auth/g2g`, `GET /auth/eldo`, `GET /health`, `POST /auth/otp`
 - 5-min client cache. Auto-retry capture khi auth het han.
@@ -259,9 +259,26 @@ DETECTED → NOTIFIED → THREAD_CREATED → DELIVERING → COMPLETED
 ## Auth Architecture
 
 ### G2G Auth
-- Chrome headless mo g2g.com, capture JWT tu CDP network requests
 - JWT song ~15 phut, auth service capture moi 13 phut
 - Clients cache 5 phut, tu dong invalidate khi 401
+- Cookies critical: `refresh_token` (`<user_id>.<hex>`, TTL ~12 ngay sliding), `long_lived_token`, `active_device_token`
+- JWT luu trong localStorage key `accessToken` (G2GSls self-issued, `iss=G2GSls`, `aud=https://www.g2g.com`)
+
+**Two-tier refresh strategy** (Phase 5, 2026-06-10):
+
+1. **Backend refresh (fast path, ~1s, no browser)** — `POST https://sls.g2g.com/user/refresh_access`
+   - Body: `{user_id, refresh_token, active_device_token, long_lived_token}` — user_id la `sub` cua JWT hien tai, 3 token con lai lay tu cookies
+   - Headers: `authorization: Bearer <current_jwt>`, `origin: https://www.g2g.com`, content-type json, cookie header
+   - Response 200 `{code:2000, payload:{access_token, refresh_token, long_lived_token, active_device_token, *_exp}}` — moi token co exp moi (sliding window). Refresh_token slide ~12 ngay moi call → khong bao gio het han neu refresh deu
+   - Su dung `curl_cffi` impersonate `chrome120` cho TLS fingerprint khop browser
+
+2. **Selenium fallback (slow path, ~30-60s, browser)** — chi khi backend refresh fail
+   - Chrome headless mo `g2g.com/g2g-user/sale?status=preparing`
+   - CDP performance log intercept `Authorization: Bearer ...` headers tu requests den `sls.g2g.com`
+   - Fallback localStorage `accessToken` neu CDP khong bat duoc
+   - Extract cookies, validate JWT exp
+
+Xem [docs/marketplace_auth.md](marketplace_auth.md) cho chi tiet endpoint contract + discovery methodology.
 
 ### Eldorado Auth
 - Eldorado dung **AWS Cognito** lam OAuth broker (Google login → Cognito session)

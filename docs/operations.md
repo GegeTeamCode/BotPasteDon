@@ -336,6 +336,64 @@ for name, exp in c.execute("SELECT name, expiry FROM moz_cookies WHERE name LIKE
 #   __Host-EldoradoRefreshToken 2026-07-08 01:55 UTC  (~30 ngay)
 ```
 
+### G2G Auth — backend refresh
+
+**Bot dung 2-tier refresh** (Phase 5, 2026-06-10):
+
+1. **Backend refresh (no browser, ~1s)** — `POST https://sls.g2g.com/user/refresh_access`
+   voi body `{user_id, refresh_token, active_device_token, long_lived_token}`.
+   user_id la `sub` cua JWT hien tai (decode JWT payload), 3 token con lai lay
+   tu cookies cua session truoc. Response 200 `{code:2000, payload:{access_token,
+   refresh_token, ...}}` chua JWT moi (15 min) + 3 token rotated. Auth thu cach
+   nay TRUOC moi cycle (~13 min). `curl_cffi` impersonate `chrome120` cho TLS.
+
+2. **Selenium fallback (~30-60s, browser)** — chi khi backend refresh fail (vd.
+   lan dau khoi tao chua co cookie bundle, hoac refresh_token het han ~12 ngay
+   khi khong refresh duoc lien tuc).
+
+**Token TTL** (sliding — moi call refresh thi exp keo dai):
+- `access_token` (JWT): 15 phut
+- `refresh_token`: ~12 ngay (sliding) → khong bao gio het neu auth chay binh thuong
+- `long_lived_token`: ~10 thang (sliding)
+- `active_device_token`: ~8 thang (sliding)
+
+Xem [docs/marketplace_auth.md](marketplace_auth.md) cho endpoint contract + JS bundle reference.
+
+**Health check**:
+```bash
+# JWT fresh?
+curl -s http://localhost:8010/health | python -m json.tool
+
+# Log refresh attempts (last 10 cycles)
+grep -E "\[G2G\] (Trying backend|backend refresh|JWT captured)" /tmp/auth*.log | tail -30
+
+# Mong doi: moi ~13 min co dong
+#   "Trying backend refresh (no browser)"
+#   "backend refresh OK | new JWT exp=15min | 29 cookies"
+# Selenium fallback chi xuat hien khi backend refresh fail:
+#   "Backend refresh failed — falling back to browser"
+#   "[G2G] JWT captured: eyJ... | cookies: 29 | exp: 15min"
+```
+
+**Re-login (khi refresh_token het han hoac bot bi G2G kick session)**:
+
+Hien tuong: backend refresh tra HTTP 401/403 hoac code != 2000, Selenium
+capture cung redirect ve `/login`. Khi do can re-login qua VNC.
+
+```bash
+# 1. Stop watchdog + auth
+ssh root@192.168.2.220 'pgrep -f "watchdog.py" | xargs -r kill -9; pgrep -f "python.*auth.main" | xargs -r kill -9'
+
+# 2. Clear G2G profile lock
+ssh root@192.168.2.220 'rm -f /opt/BotPasteDon/chrome_profile_g2g/{SingletonLock,SingletonCookie,SingletonSocket}'
+
+# 3. Mo Chrome visible qua Xvfb :99 (auth-login se prompt OTP qua dashboard)
+ssh root@192.168.2.220 'cd /opt/BotPasteDon && HEADLESS_MODE=false setsid venv/bin/python -u -m auth.main </dev/null >/tmp/auth.log 2>&1 & disown'
+
+# 4. Connect VNC 192.168.2.220:5900 → login g2g.com voi credential. OTP nhap qua dashboard 8766
+# 5. Sau khi /auth/g2g return JWT, switch back HEADLESS_MODE=true va restart watchdog
+```
+
 ### G2G Scanner — Auth service unreachable (curl timeout 30s)
 
 **Trieu chung**:
