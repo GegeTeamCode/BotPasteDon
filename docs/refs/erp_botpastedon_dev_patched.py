@@ -545,8 +545,32 @@ def delivery_callback():
 		)
 		frappe.throw(f"Sell Order not found for order_id={order_id}")
 
-	# Don't auto-Complete — a separate worker handles that
-	# Just log the result; order stays in Delivered state
+	# Don't auto-Complete — a separate worker handles that.
+	# Just log the result; order stays in Delivered state.
+	#
+	# ⚠️ DEAD CODE WARNING (audit 2026-06-10):
+	#   The `else` branch below has TWO layered defects and is currently
+	#   unreachable in production. Workers (workers/g2g_worker.py +
+	#   workers/eldorado_worker.py) post their completion notifications to
+	#   the Discord coordinator on :8030, NOT to this endpoint, so action is
+	#   always "post_evidence" in real traffic.
+	#
+	#   If someone ever wires a caller that POSTs with action="normal_delivery"
+	#   or "fast_delivery", expect to hit:
+	#     (1) `frappe.exceptions.PermissionError` — webhook runs as Guest;
+	#         save() → validate_workflow → check_permission("read") on the
+	#         pre-save snapshot bypasses our ignore_permissions flag.
+	#     (2) `WorkflowPermissionError: transition not allowed from
+	#         In Delivery to Delivered` — the Sell Order workflow does not
+	#         contain a direct In Delivery → Delivered transition; the only
+	#         legal arrival at Delivered is via Evidence Uploaded → Deliver.
+	#
+	#   To make this branch functional you need to either:
+	#     - Call `frappe.model.workflow.apply_workflow(so, 'Deliver')` after
+	#       moving the SO to Evidence Uploaded, OR
+	#     - Use frappe.db.set_value (skips both checks) + manually invoke
+	#       the inventory hooks that before_save would have fired.
+	#   Both require a workflow definition review; left as-is.
 	if action == "post_evidence":
 		new_state = "Delivered"
 	else:
