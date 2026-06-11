@@ -192,6 +192,38 @@ grep -i "error\|failed\|traceback" /tmp/eldo_scanner.log | tail -20
 
 ## Deploy Code Changes
 
+### Git-based deploy (CHUAN, tu 2026-06-12)
+
+`/opt/BotPasteDon` la **git checkout cua `origin/main`**. Repo la single source of
+truth — server luon khop `origin/main`. Runtime (`.env`, `data/`, `chrome_profile_*`,
+`venv/`) bi gitignore nen `git reset` khong dung toi.
+
+```powershell
+# 1. Sua code tren LOCAL, commit, push
+git commit -am "fix: ..." ; git push origin main
+
+# 2. Deploy: server git pull (reset --hard origin/main) + restart service can thiet
+python scripts/deploy_git.py scanner_g2g            # sync + restart 1 service
+python scripts/deploy_git.py worker_g2g worker_eldo # nhieu service
+python scripts/deploy_git.py                        # CHI sync code, khong restart
+python scripts/deploy_git.py all                    # sync + restart tat ca (nang)
+```
+
+Service hop le: `auth, scanner_g2g, scanner_eldo, worker_g2g, worker_eldo,
+coordinator, dashboard`. Script tu stop watchdog truoc, restart service, restart
+watchdog cuoi. Repo `.env.example` → server `.env` van giu (gitignore).
+
+**QUY TAC VANG — khong sua code TRUC TIEP tren server.** Lam vay tao "drift" (server
+khac repo) → lan sau `git reset --hard` se **mat** thay doi do. `deploy_git.py` **tu
+abort** neu phat hien tracked drift chua commit — luc do phai commit no vao repo truoc
+(`git -C /opt/BotPasteDon diff` de xem). Neu buoc phai hotfix tren server, commit nguoc
+lai repo ngay.
+
+**Rollback**: `ssh root@192.168.2.220 'cd /opt/BotPasteDon && git reset --hard <commit>'`
+roi restart service. (Hard-reset chi dung tracked code, runtime an toan.)
+
+### SCP deploy (legacy — chi dung khi git khong kha dung)
+
 ```bash
 # 1. Tu local machine (Windows)
 scp -r scanners/ root@192.168.2.220:/opt/BotPasteDon/
@@ -203,9 +235,9 @@ ssh root@192.168.2.220
 # Kill + restart chi scanner eldo
 ps aux | grep 'scanners.main.*eldo' | grep -v grep | awk '{print $2}' | xargs kill -9
 cd /opt/BotPasteDon && nohup venv/bin/python -u -m scanners.main --platform eldorado > /tmp/eldo_scanner.log 2>&1 &
-
-# Tuong tu cho cac service khac
 ```
+
+**Canh bao SCP**: deploy tung file de tao drift va EOL-noise (CRLF/LF). Uu tien git.
 
 **Luu y**: Khi deploy config thay doi (`.env`, `shared/config.py`), can restart **tat ca** service doc config.
 
