@@ -101,9 +101,9 @@ async def send_erp_webhook(
     order_data: dict,
     webhook_url: str,
     api_key: str,
-    max_retries: int = 2,
+    max_retries: int = 3,
 ) -> bool:
-    """Send order data to ERP webhook. Non-blocking — failures don't affect scanner."""
+    """Send order data to ERP webhook with retry and exponential backoff."""
     if not webhook_url or not api_key:
         return False
     # Debug: log exact pricing values
@@ -141,7 +141,7 @@ async def send_erp_webhook(
         except Exception as e:
             logger.warning(f"ERP webhook failed (attempt {attempt + 1}): {e}")
             if attempt < max_retries - 1:
-                await asyncio.sleep(1)
+                await asyncio.sleep(2 ** (attempt + 1))
     return False
 
 
