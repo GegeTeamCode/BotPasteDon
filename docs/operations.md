@@ -245,6 +245,30 @@ Nguyen nhan: ERP tra `ValidationError` khi `orderId` hoac `platform` bi thieu.
   "
   ```
 
+### Duplicate ERP Sell Order (1 don marketplace -> 2 SO)
+
+**Trieu chung**: Mot order_id tao **2 Sell Order** khac nhau tren ERP (vd. log
+ca `g2g_scanner` lan `eldo_scanner` cung in `ERP accepted: <order_id> -> SO-...`
+voi 2 ma SO khac nhau, trong cung 1 giay).
+
+**Nguyen nhan (fixed 2026-06-12)**: Vong `erp_retry_loop` trong
+[scanners/main.py](../scanners/main.py) chay trong **ca 2 tien trinh scanner**
+(g2g + eldo) nhung `get_unsynced_orders()` **khong loc platform** → ca 2 loop
+quet chung 1 bang `orders`, cung retry 1 don. Khi ERP 500 o lan POST dau (don ket
+`erp_synced=0`), 2 loop tick cung luc → POST dong thoi → ERP dedup (check-then-insert,
+khong atomic) tao 2 SO. Binh thuong ERP dedup bat duoc vi cac post cach nhau, chi
+race khi 2 loop ban dong thoi.
+
+**Fix da deploy**:
+- `get_unsynced_orders(platform=...)` — moi scanner chi retry don cua platform minh.
+- `claim_erp_order()` / `release_erp_order()` — atomic claim (`erp_synced` 0→2→1/0)
+  bang conditional UPDATE; 2 tien trinh dua chi 1 thang. Reclaim claim "treo" sau 180s
+  (crash-safe).
+- Fix dead-code `_scanner_db` → initial-send mark synced ngay, bot 1 vong post thua.
+
+**Don da bi nhan doi truoc fix**: fix chi chan phat sinh moi, KHONG xoa SO cu. Phai
+huy thu cong 1 trong moi cap tren ERP.
+
 ### Auth Service Camoufox Error
 
 **Trieu chung**: "Playwright Sync API inside the asyncio loop"
@@ -262,8 +286,27 @@ TypeError: Cannot read properties of undefined (reading 'url')
   at FFBrowserContext.<anonymous> (.../coreBundle.js:49624:39)
 ```
 **Nguyen nhan**: Bug trong Playwright bundle khi page error khong co `location`. Khong phai code minh.
-**Workaround**: Retry logic + thread isolation cua `EldoAuth.capture()` tu retry profile khac → lan sau pass. Khong can lam gi them.
-**Fix triet de**: Upgrade Camoufox/Playwright (chua lam).
+**Workaround (capture)**: Retry logic + thread isolation cua `EldoAuth.capture()` tu retry profile khac → lan sau pass cho viec **lay cookies**.
+
+**⚠️ Hau qua nghiem trong — thread spin 100% CPU (2026-06-12)**: Khi node driver
+crash GIUA CHUNG (`Connection closed while reading from the driver`), khoi
+`with Camoufox(...) as browser:` trong `_capture_single()` ([auth/main.py](../auth/main.py))
+luc `__exit__` goi `browser.close()` tren connection da chet → Playwright sync
+`_sync()` (`playwright/_impl/_sync_base.py`) **busy-loop vo han, giu GIL**. Thread
+`ThreadPoolExecutor` do **khong bao gio ket thuc** → don 1 core lien tuc. Capture van
+"pass" (profile khac), nhung thread don dep bi treo am tham. De 2 ngay → tich luy
+14-17h CPU (chinh la su co "python kẹt 100%" goc).
+
+**Chan doan**: `py-spy dump --pid <auth_pid>` → thread `active+gil` co stack
+`_sync → close → __exit__ (camoufox/sync_api.py) → _capture_single (auth/main.py)`.
+Thread spin **khong kill rieng duoc** (pure-Python deadlock-spin); kill chrome/camoufox
+con KHONG dung lai. **Cach duy nhat clear: restart auth** (xem "Restart Auth Service").
+
+**Fix triet de (TODO, chua lam)**: process-isolate Camoufox capture (chay
+`_capture_single` trong subprocess co timeout, kill subprocess khi treo) HOAC bound
+`__exit__`/`close()` bang wall-clock timeout. Upgrade Camoufox/Playwright cung co the
+khu bug bundle. Tam thoi: neu thay auth don 1 core lien tuc + `py-spy` tro vao camoufox
+close → restart auth.
 
 ### G2G Scanner 401 During Extract
 
@@ -313,7 +356,10 @@ ssh root@192.168.2.220 'pgrep -f "watchdog.py" | xargs -r kill -9; pgrep -f "pyt
 
 # 2. Clear profile lock + launch Camoufox visible voi profile main
 ssh root@192.168.2.220 'rm -f /opt/BotPasteDon/chrome_profile_eldo/{parent.lock,.parentlock,lock}'
-ssh root@192.168.2.220 'cd /opt/BotPasteDon && DISPLAY=:99 setsid venv/bin/python -u /tmp/open_eldo_vnc_profile.py chrome_profile_eldo </dev/null >/tmp/vnc_main.log 2>&1 & disown'
+# QUAN TRONG: mo Camoufox VISIBLE phai dung `nohup ... &` (nhu deploy_open_eldo.py),
+# KHONG dung `setsid ... </dev/null & disown` — detach kieu do lam vo pipe IPC cua
+# Playwright node driver -> browser crash ngay sau khi mo (EPIPE, node:events).
+ssh root@192.168.2.220 'cd /opt/BotPasteDon && DISPLAY=:99 nohup venv/bin/python -u /tmp/open_eldo_vnc_profile.py chrome_profile_eldo >/tmp/vnc_main.log 2>&1 &'
 
 # 3. Connect VNC 192.168.2.220:5900 (pwd 123456), login Google → Eldorado
 # 4. SIGTERM viewer de Camoufox SDK flush cookies cleanly
@@ -479,12 +525,16 @@ Xu ly cac case bot scanner/worker khong handle: auto-complete sau 3 ngay, disput
 sau khi complete, cancel trong khi delivering.
 
 **Kien truc**:
-- Poll cheap counts endpoint (G2G `count-my-orders`, Eldo `statesCount`).
+- Poll cheap counts endpoint (G2G `count_my_orders`, Eldo `statesCount`).
 - Khi counts thay doi (tripwire) -> fetch list don state tuong ung -> upsert vao
   `marketplace_status` (SQLite `data/orders.db`).
 - Neu `prev_state != new_state` -> push len ERP `status_update`.
 - Lan dau chay (DB rong) = **full backfill silent** — insert het state hien tai
   vao DB, KHONG push ERP (de tranh spam ~10k transitions gia).
+
+**Tripwire chi tiet**:
+- **G2G**: fetch `completed` + `cancelled` khi count `delivering` doi HOAC `last_order_completed_at` advance. `list_my_cases` chay **moi cycle** (khong gated, 20-page cap) → synthesize `disputed` push khi case moi mo (`prev != "open" → "open"`).
+- **Eldo**: fetch state co count delta trong `{Delivered, Disputed, Completed, Canceled}`. Pagination: 1500 trang on backfill, 25 trang + early-exit sau 50 known-orders lien tiep tren incremental.
 
 **State mapping (bot side -> ERP workflow_state)**:
 
@@ -540,7 +590,7 @@ for r in conn.execute('SELECT platform, state, count FROM marketplace_state_coun
     print(' ', r)
 print('total statuses:', conn.execute('SELECT count(*) FROM marketplace_status').fetchone()[0])
 print('pushed (last 24h):', conn.execute(\"SELECT count(*) FROM marketplace_status WHERE last_pushed_at > datetime('now', '-1 day')\").fetchone()[0])
-print('disputes open:', conn.execute(\"SELECT count(*) FROM marketplace_disputes WHERE status='open'\").fetchone()[0])
+print('disputes open:', conn.execute(\"SELECT count(*) FROM marketplace_disputes WHERE case_status='open'\").fetchone()[0])
 conn.close()"
 
 # Heartbeat
@@ -569,8 +619,21 @@ conn.close()"
 
 **Khi push ERP fail**: `push_attempts` tang, `last_pushed_at` van NULL. Next
 cycle khi state van la state moi -> retry (vi prev_state trong DB van la state
-cu, no thay state cu != state moi -> push lai). Sau 3 lan 5xx -> bo qua,
-log warning.
+cu, no thay state cu != state moi -> push lai). 5xx retries voi backoff
+2/4/8s (default 3 attempts trong `ERPClient.push_status_update`); 4xx (vd. 403
+Guest perm, 417 MandatoryError) bi log Warning va KHONG retry — can fix ERP
+config / data quality.
+
+**Config knobs** (`.env`):
+- `STATUS_SYNC_INTERVAL_SEC` — cycle interval seconds (default 1800)
+- `ERP_STATUS_UPDATE_URL` — full endpoint URL. Khong set → auto-derive tu
+  `ERP_WEBHOOK_URL` bang cach thay `.new_order` cuoi cung thanh `.status_update`
+- `ERP_API_KEY_G2G` / `ERP_API_KEY_ELDO` — per-platform API key, fallback ve
+  `ERP_API_KEY` neu thieu
+
+**CLI flags**:
+- `python -m status_sync --interval 600` — override cycle seconds
+- `python -m status_sync --once` — chay 1 cycle roi exit (testing post-deploy)
 
 ### Tra lai bang chung cho don da Completed (proof khong tu len marketplace)
 

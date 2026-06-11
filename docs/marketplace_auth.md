@@ -4,6 +4,8 @@ Tài liệu này document co che authentication cua hai marketplace **Eldorado.g
 
 Hai marketplace dung **kien truc khac nhau** (Cognito broker vs self-issued JWT) nhung cung pattern: short-lived access token + long-lived refresh token. Bot dung cung **two-tier strategy** — backend refresh nhanh, browser fallback cham.
 
+**Consumers cua auth service**: workers (`workers/g2g_worker.py`, `workers/eldorado_worker.py`) khi giao hang; scanners (`scanners/{g2g,eldorado}_scanner_api.py`) khi poll pending orders; **status_sync** (`status_sync/{g2g,eldo}_sync.py`) khi poll counts + state lists moi 30 phut. Tat ca consume qua `shared/{g2g,eldo}_auth.py` (5-min cache, auto-invalidate khi 401).
+
 ---
 
 ## Eldorado.gg

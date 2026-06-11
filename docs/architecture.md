@@ -103,12 +103,19 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 
 ### status_sync/
 
-**`status_sync/main.py`** — long-running process, async cycle moi 30 min.
+**`status_sync/main.py`** — long-running process. Async cycle moi `STATUS_SYNC_INTERVAL_SEC` (default 1800s = 30m). Heartbeat 30s vao bang `heartbeat`. Signal handler (SIGTERM/SIGINT) → graceful shutdown. CLI: `--interval <sec>` override + `--once` chay 1 cycle roi exit (testing). Abort startup neu `ERP_STATUS_UPDATE_URL` rong.
 
-- **`G2GSync`** (`g2g_sync.py`): poll `count-my-orders` (cheap tripwire) → fetch `list_my_order` cho cac state changed (`completed`, `cancelled`). Poll `list_my_cases` moi cycle de detect dispute. Push `status_update` len ERP webhook khi state thay doi.
-- **`EldoSync`** (`eldo_sync.py`): poll `statesCount` → fetch `/api/orders/me/seller/orders` paginated cho cac state changed (`Delivered`, `Disputed`, `Completed`, `Canceled`). Push `status_update` len ERP webhook.
-- **`ERPClient`** (`erp_client.py`): aiohttp client gui `POST status_update` voi exponential backoff retry (5xx) + no-retry 4xx.
-- **First run**: silent backfill — insert toan bo state hien tai vao DB KHONG push ERP (tranh spam ~10k transitions gia). Tu cycle 2: chi push thay doi.
+Moi cycle goi `G2GSync.run_once()` va `EldoSync.run_once()` song song qua `asyncio.gather(return_exceptions=True)` — exception 1 ben khong huy ben kia.
+
+- **`G2GSync`** (`g2g_sync.py`):
+  - Tripwire: `count_my_orders` so sanh voi snapshot `marketplace_state_counts`. Fetch `list_my_order` cho `completed`/`cancelled` khi `delivering` count doi hoac `last_order_completed_at` tien. (`issues` count la signal khong-action, chi de notice.)
+  - Disputes: `list_my_cases` chay **moi cycle** (20-page cap), KHONG gated by tripwire. Synthesize `disputed` push khi case `prev != "open"` → `"open"`.
+  - State list khong paginate cap o status_sync layer — relies on `list_orders_by_status` return all.
+- **`EldoSync`** (`eldo_sync.py`):
+  - Tripwire: `statesCount` so sanh snapshot. Fetch `/api/orders/me/seller/orders` cho cac state co count delta.
+  - Pagination: 1500 trang max on first-run backfill; 25 trang + early-exit sau 50 known-orders lien tiep tren incremental.
+- **`ERPClient`** (`erp_client.py`): aiohttp `POST status_update` voi exponential backoff (2/4/8s, default 3 attempts). 4xx → KHONG retry (validation/auth fix manually). 5xx → retry. Headers: `X-API-Key` lay tu `ERP_API_KEY_G2G` hoac `ERP_API_KEY_ELDO` tuy `payload.platform`.
+- **First run** (`marketplace_state_counts` rong): silent backfill — insert toan bo state hien tai vao DB KHONG push ERP (tranh spam ~10k transitions gia). Tu cycle 2: chi push khi `prev_state != new_state`.
 
 State mapping → ERP `workflow_state`:
 | Marketplace state | ERP workflow_state |
@@ -129,6 +136,11 @@ PROTECTED workflow states ERP webhook KHONG override: `Refunded`, `Partially Ref
 4. **Apply** — write via `frappe.db.set_value` (bypasses `save()`'s workflow validation, which would otherwise raise `PermissionError` because the webhook runs as Guest and the `_doc_before_save` snapshot doesn't carry `ignore_permissions`). Safe because the whitelisted targets have no business hooks in `Sell Order.before_save`.
 
 Every outcome (except `no_change` and `no_so` — too noisy) writes a `WS Activity Log` row with `action="status_update"`, status Info/Warning, full payload. Search there for monitoring + audit.
+
+**Config knobs** (`.env` / env vars):
+- `STATUS_SYNC_INTERVAL_SEC` — cycle interval (default 1800)
+- `ERP_STATUS_UPDATE_URL` — full endpoint. Khong set → auto-derive tu `ERP_WEBHOOK_URL` bang cach thay `.new_order` thanh `.status_update`
+- `ERP_API_KEY_G2G`, `ERP_API_KEY_ELDO` — fallback `ERP_API_KEY` neu thieu
 
 ### dashboard/
 

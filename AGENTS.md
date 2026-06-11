@@ -20,10 +20,10 @@ python scripts/check_all_processes.py
 ssh root@192.168.2.220 'curl -s http://localhost:8010/health | python -m json.tool'
 
 # Recent scanner paste activity
-ssh root@192.168.2.220 'tail -c 4000 /tmp/g2g_scanner.log /tmp/eldorado_scanner.log'
+ssh root@192.168.2.220 'tail -c 4000 /tmp/g2g_scanner.log /tmp/eldo_scanner.log'
 
-# Phase 4 Eldorado backend refresh cycles
-ssh root@192.168.2.220 'grep -E "\[ELDO\] (Trying backend|backend refresh)" /tmp/auth*.log | tail -20'
+# Phase 4 Eldorado + Phase 5 G2G backend refresh cycles
+ssh root@192.168.2.220 'grep -E "\[(ELDO|G2G)\] (Trying backend|backend refresh)" /tmp/auth*.log | tail -20'
 
 # Order DB pending state
 ssh root@192.168.2.220 'venv/bin/python -c "import sqlite3; c=sqlite3.connect(\"data/orders.db\"); print(\"DETECTED\", c.execute(\"SELECT count(*) FROM orders WHERE status=\\\"DETECTED\\\"\").fetchone()[0])"'

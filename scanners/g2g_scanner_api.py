@@ -193,14 +193,39 @@ class G2GAPIScanner:
         except Exception as e:
             logger.warning("mark_as_delivering for %s: %s", order_id, e)
 
-        # Step 3: Re-fetch full detail after state change
+        # Step 3: Re-fetch full detail after state change.
+        # Retry on transient errors (curl timeout, 5xx). Steps 1+2 already
+        # committed state on G2G — if we give up here, the order is orphaned:
+        # locked in `delivering` on marketplace, never inserted to local DB.
+        # AuthError still raises so the outer JWT-refresh path runs.
         await asyncio.sleep(1)
-        detail = await loop.run_in_executor(
-            None, self.api.get_order_detail,
-            api_id, auth, self._seller_id or ""
-        )
+        last_err: Optional[Exception] = None
+        for attempt in range(1, 4):
+            try:
+                detail = await loop.run_in_executor(
+                    None, self.api.get_order_detail,
+                    api_id, auth, self._seller_id or ""
+                )
+                return self._map_order_data(detail, order_info.get("url", ""))
+            except AuthError:
+                raise
+            except Exception as e:
+                last_err = e
+                if attempt < 3:
+                    wait = 2 * attempt
+                    logger.warning(
+                        "get_order_detail for %s attempt %d failed (%s) — retry in %ds",
+                        order_id, attempt, e, wait,
+                    )
+                    await asyncio.sleep(wait)
 
-        return self._map_order_data(detail, order_info.get("url", ""))
+        logger.error(
+            "get_order_detail for %s gave up after 3 attempts: %s — "
+            "order is in 'delivering' on G2G but NOT in local DB; "
+            "manual recovery needed",
+            order_id, last_err,
+        )
+        return None
 
     def _extract_order_id(self, order: dict) -> Optional[str]:
         for key in ("order_item_id", "order_id", "id"):

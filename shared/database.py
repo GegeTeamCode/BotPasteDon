@@ -340,19 +340,75 @@ class Database:
             finally:
                 conn.close()
 
-    def get_unsynced_orders(self, max_retries: int = 50) -> List[Dict]:
+    def get_unsynced_orders(
+        self,
+        max_retries: int = 50,
+        platform: Optional[str] = None,
+        claim_stale_after_sec: int = 180,
+    ) -> List[Dict]:
+        """Orders that still need an ERP push.
+
+        erp_synced semantics: 0 = needs push, 1 = synced, 2 = in-flight (claimed).
+        Returns unsynced (0) plus any in-flight (2) whose claim has gone stale
+        (process died mid-push), so a crashed claim is eventually retried.
+        Pass ``platform`` so a scanner only retries its own orders — otherwise two
+        scanners racing the same order create duplicate ERP Sell Orders.
+        """
         with self._lock:
             conn = self._get_conn()
             try:
-                rows = conn.execute(
-                    """SELECT * FROM orders
-                       WHERE erp_synced = 0
-                       AND status NOT IN ("DETECTED", "FAILED")
-                       AND erp_retry_count < ?
-                       ORDER BY created_at ASC""",
-                    (max_retries,),
-                ).fetchall()
+                sql = """SELECT * FROM orders
+                         WHERE (erp_synced = 0
+                                OR (erp_synced = 2
+                                    AND updated_at <= datetime('now', ?)))
+                         AND status NOT IN ("DETECTED", "FAILED")
+                         AND erp_retry_count < ?"""
+                params: list = [f"-{int(claim_stale_after_sec)} seconds", max_retries]
+                if platform is not None:
+                    sql += " AND platform = ?"
+                    params.append(platform)
+                sql += " ORDER BY created_at ASC"
+                rows = conn.execute(sql, params).fetchall()
                 return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
+    def claim_erp_order(self, order_id: str, claim_stale_after_sec: int = 180) -> bool:
+        """Atomically mark an order in-flight (erp_synced=2) before pushing to ERP.
+
+        Returns True only if this caller won the claim. Wins when the order is
+        unsynced (0) or its previous in-flight claim is stale. The conditional
+        UPDATE is the mutual-exclusion primitive: with two scanners racing, only
+        one row update takes effect, so only one ERP push goes out per order.
+        """
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                cur = conn.execute(
+                    """UPDATE orders
+                       SET erp_synced = 2, updated_at = CURRENT_TIMESTAMP
+                       WHERE order_id = ?
+                       AND (erp_synced = 0
+                            OR (erp_synced = 2
+                                AND updated_at <= datetime('now', ?)))""",
+                    (order_id, f"-{int(claim_stale_after_sec)} seconds"),
+                )
+                conn.commit()
+                return cur.rowcount > 0
+            finally:
+                conn.close()
+
+    def release_erp_order(self, order_id: str):
+        """Release an in-flight claim back to unsynced (e.g. the push failed)."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    "UPDATE orders SET erp_synced = 0, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE order_id = ? AND erp_synced = 2",
+                    (order_id,),
+                )
+                conn.commit()
             finally:
                 conn.close()
 
