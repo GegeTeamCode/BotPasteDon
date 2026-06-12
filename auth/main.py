@@ -953,6 +953,30 @@ def _eldo_capture_isolated(profile_dir: str, timeout_sec: int = 200) -> dict:
     return data or {}
 
 
+def _read_eldo_disk_cookies(profile_dir: str) -> dict:
+    """Read eldorado.gg cookies (name -> value) from a profile's cookies.sqlite.
+
+    Lets a cold-start backend refresh reuse a still-valid on-disk RefreshToken
+    instead of opening Camoufox — the browser path STRIPS the on-disk session
+    (Eldo set-cookie clears __Host-Eldorado* when the IdToken has expired),
+    permanently logging the profile out.
+    """
+    import sqlite3
+    p = Path.cwd() / profile_dir / "cookies.sqlite"
+    if not p.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=5)
+        try:
+            rows = conn.execute("SELECT name, value, host FROM moz_cookies").fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("[ELDO] read disk cookies failed for %s: %s", profile_dir, e)
+        return {}
+    return {n: v for n, v, h in rows if "eldorado" in (h or "")}
+
+
 class EldoAuth(PlatformAuth):
     """Eldorado auth using Camoufox (bypass Cloudflare Turnstile)."""
 
@@ -971,34 +995,60 @@ class EldoAuth(PlatformAuth):
         self._last_user_agent: str = DEFAULT_USER_AGENT
 
     def _try_backend_refresh(self) -> Optional[dict]:
-        """Hit Eldorado's own /api/authentication/refreshTokens endpoint to mint
-        a fresh IdToken without a browser. Returns a fully-formed auth `data`
-        dict on success, or None to fall back to the Camoufox path."""
-        rt = (self._last_cookies or {}).get("__Host-EldoradoRefreshToken")
-        if not rt:
-            return None
-        xsrf = (self._last_cookies or {}).get("__Host-XSRF-TOKEN", "")
-        if not xsrf:
+        """Mint a fresh IdToken via Eldorado's /api/authentication/refreshTokens
+        endpoint without a browser. Returns a full auth `data` dict, or None to
+        fall back to the Camoufox path.
+
+        Tries the warm in-memory bundle first, then — crucially on cold start —
+        reads a still-valid RefreshToken off each profile's cookies.sqlite. This
+        keeps us off the Camoufox path, which STRIPS the on-disk session (Eldo
+        set-cookie clears __Host-Eldorado* when the IdToken has expired) and
+        permanently logs the profile out.
+        """
+        # Warm path: bundle kept in memory from a previous refresh/capture.
+        data = self._backend_refresh_with(self._last_cookies, self._last_user_agent)
+        if data:
+            return data
+
+        # Cold path: reuse a valid RefreshToken straight off disk, per profile.
+        for i in range(len(ELDO_PROFILES)):
+            profile = ELDO_PROFILES[(self._profile_idx + i) % len(ELDO_PROFILES)]
+            disk = _read_eldo_disk_cookies(profile)
+            if not disk.get("__Host-EldoradoRefreshToken"):
+                continue
+            logger.info("[ELDO] Backend refresh from on-disk cookies of %s", profile)
+            data = self._backend_refresh_with(disk, self._last_user_agent or DEFAULT_USER_AGENT)
+            if data:
+                self.profile_dir = profile
+                self._profile_idx = ELDO_PROFILES.index(profile)
+                return data
+        return None
+
+    def _backend_refresh_with(self, base_cookies: dict, user_agent: str) -> Optional[dict]:
+        """Run one backend refresh against `base_cookies`. Returns data or None."""
+        rt = (base_cookies or {}).get("__Host-EldoradoRefreshToken")
+        xsrf = (base_cookies or {}).get("__Host-XSRF-TOKEN", "")
+        if not rt or not xsrf:
             return None
 
         logger.info("[ELDO] Trying backend refresh (no browser)")
         updated = _eldo_backend_refresh(
-            self._last_cookies, xsrf, self._last_user_agent,
+            base_cookies, xsrf, user_agent,
             x_client_build_time=self._x_client_build_time,
         )
         if not updated:
             logger.info("[ELDO] Backend refresh failed — fallback to Camoufox")
             return None
 
-        # Merge Set-Cookie updates into the cached bundle.
-        cookies = dict(self._last_cookies)
+        # Merge Set-Cookie updates into the bundle.
+        cookies = dict(base_cookies)
         cookies.update(updated)
         # Refresh xsrf if the server rotated it.
         new_xsrf = updated.get("__Host-XSRF-TOKEN") or xsrf
 
         # Probe API to confirm the new IdToken actually authenticates.
         api_verified = _eldo_api_probe(
-            cookies, new_xsrf, self._last_user_agent,
+            cookies, new_xsrf, user_agent,
             nsure_device_id=self._nsure_device_id,
             x_client_build_time=self._x_client_build_time,
         )
@@ -1010,7 +1060,7 @@ class EldoAuth(PlatformAuth):
         return {
             "cookies": cookies,
             "xsrf_token": new_xsrf,
-            "user_agent": self._last_user_agent,
+            "user_agent": user_agent,
             "logged_in": True,
             "api_verified": True,
             "nsure_device_id": self._nsure_device_id,
