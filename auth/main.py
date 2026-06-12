@@ -900,6 +900,76 @@ def _eldo_backend_refresh(cookies: dict, xsrf_token: str, user_agent: str = "",
     return updated
 
 
+def _eldo_capture_worker(profile_dir, result_q):
+    """Subprocess entry: run one Camoufox capture, hand the result back via queue.
+
+    Calls os.setsid() first so the parent can SIGKILL the whole browser tree
+    (Playwright node driver + camoufox-bin) as one process group if close() hangs.
+    """
+    try:
+        os.setsid()
+    except Exception:
+        pass
+    try:
+        data = EldoAuth._capture_single(profile_dir)
+    except Exception as e:
+        logger.error("[ELDO] capture worker crashed on %s: %s", profile_dir, e)
+        data = {}
+    try:
+        result_q.put(data)
+    except Exception:
+        pass
+
+
+def _eldo_capture_isolated(profile_dir: str, timeout_sec: int = 200) -> dict:
+    """Run one Camoufox capture in a spawned subprocess with a hard timeout.
+
+    Why a subprocess: the Playwright node driver occasionally crashes mid-capture
+    (coreBundle.js TypeError on a page error with no `location`); Camoufox.__exit__
+    then calls browser.close() on the dead connection and Playwright's sync
+    `_sync()` busy-loops forever holding the GIL — a 100%-CPU thread that cannot
+    be killed in-process (this was the recurring "python kẹt 100%" incident). In a
+    child process the hang is contained: on timeout we SIGKILL the process group
+    and move on to the next profile. `spawn` (not fork) avoids forking this
+    multi-threaded asyncio service.
+    """
+    import multiprocessing as _mp
+    import queue as _queue
+
+    ctx = _mp.get_context("spawn")
+    result_q = ctx.Queue()
+    proc = ctx.Process(target=_eldo_capture_worker, args=(profile_dir, result_q))
+    proc.start()
+    data = {}
+    try:
+        data = result_q.get(timeout=timeout_sec)
+    except _queue.Empty:
+        logger.error("[ELDO] capture timed out on %s (%ds) — killing browser "
+                     "subprocess tree (Playwright close() hang)", profile_dir, timeout_sec)
+    except Exception as e:
+        logger.error("[ELDO] capture subprocess error on %s: %s", profile_dir, e)
+    finally:
+        # Kill the worker's whole process group (node + camoufox-bin). Targeting
+        # the child's own pid only ever matches its setsid group, never ours.
+        if proc.pid:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        proc.join(timeout=10)
+        if proc.is_alive():
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            proc.join(timeout=5)
+        try:
+            result_q.close()
+        except Exception:
+            pass
+    return data or {}
+
+
 class EldoAuth(PlatformAuth):
     """Eldorado auth using Camoufox (bypass Cloudflare Turnstile)."""
 
@@ -970,8 +1040,16 @@ class EldoAuth(PlatformAuth):
         self.profile_dir = ELDO_PROFILES[self._profile_idx]
         logger.info("[ELDO] Switching to profile: %s", self.profile_dir)
 
-    def _capture_single(self, profile_dir: str) -> dict:
-        """Capture auth from a single profile. Returns data or {}."""
+    @staticmethod
+    def _capture_single(profile_dir: str) -> dict:
+        """Capture auth from a single profile. Returns data or {}.
+
+        Static + module-reachable so it can run inside an isolated subprocess
+        (see _eldo_capture_isolated). Always invoke it through that wrapper, never
+        directly — the Playwright node driver can crash mid-capture (coreBundle.js
+        bug) and the sync close() in Camoufox.__exit__ then busy-loops forever
+        holding the GIL; only killing a separate process recovers from that.
+        """
         import time as _time
         from pathlib import Path
 
@@ -1179,7 +1257,6 @@ class EldoAuth(PlatformAuth):
             self._consecutive_failures = 0
             return backend_data
 
-        from concurrent.futures import ThreadPoolExecutor
         # Snapshot the current Cognito tokens so we can detect when a Camoufox
         # capture has stripped them (Eldo's response set-cookie on a failed
         # session probe clears RefreshToken/IdToken — we don't want to overwrite
@@ -1189,11 +1266,10 @@ class EldoAuth(PlatformAuth):
 
         for i in range(len(ELDO_PROFILES)):
             profile = ELDO_PROFILES[(self._profile_idx + i) % len(ELDO_PROFILES)]
-            # Fresh thread per attempt: Playwright sync API leaves asyncio state
-            # in the thread after use, so reusing a thread for the next profile
-            # triggers "Sync API inside asyncio loop".
-            with ThreadPoolExecutor(max_workers=1) as ex:
-                data = ex.submit(self._capture_single, profile).result()
+            # Isolate each attempt in its own subprocess: keeps Playwright's
+            # asyncio/sync state out of this service's threads AND lets a hung
+            # close() (node driver crash) be SIGKILLed instead of spinning the GIL.
+            data = _eldo_capture_isolated(profile)
             if data and data.get("logged_in") and data.get("xsrf_token"):
                 # Guard: if we used to have RefreshToken and now we don't, the
                 # capture stripped our credentials — Eldo's response wiped the
