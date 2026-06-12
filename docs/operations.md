@@ -332,13 +332,20 @@ luc `__exit__` goi `browser.close()` tren connection da chet → Playwright sync
 **Chan doan**: `py-spy dump --pid <auth_pid>` → thread `active+gil` co stack
 `_sync → close → __exit__ (camoufox/sync_api.py) → _capture_single (auth/main.py)`.
 Thread spin **khong kill rieng duoc** (pure-Python deadlock-spin); kill chrome/camoufox
-con KHONG dung lai. **Cach duy nhat clear: restart auth** (xem "Restart Auth Service").
+con KHONG dung lai. Mot instance spin DA xay ra (truoc fix) chi clear duoc bang restart auth.
 
-**Fix triet de (TODO, chua lam)**: process-isolate Camoufox capture (chay
-`_capture_single` trong subprocess co timeout, kill subprocess khi treo) HOAC bound
-`__exit__`/`close()` bang wall-clock timeout. Upgrade Camoufox/Playwright cung co the
-khu bug bundle. Tam thoi: neu thay auth don 1 core lien tuc + `py-spy` tro vao camoufox
-close → restart auth.
+**FIX da apply (2026-06-12)** — process isolation:
+- `EldoAuth._capture_single` gio la `@staticmethod`; moi capture chay trong **subprocess
+  spawn rieng** qua `_eldo_capture_isolated()` (auth/main.py) + worker o
+  [`auth/_capture_proc.py`](../auth/_capture_proc.py).
+- Worker `os.setsid()` → rieng process group. Parent doc ket qua qua `Queue` voi
+  **timeout 200s**; neu capture treo (close-spin), parent `os.killpg(SIGKILL)` ca cay
+  browser (node driver + camoufox-bin) roi rotate profile ke tiep. Hang gio bi **contain
+  trong child killable**, khong con leak thread spin trong auth.
+- `spawn` (khong phai fork) → khong fork service da-luong nay.
+- Capture logic giu nguyen; chi boc subprocess. Verify: capture van ra cookies binh thuong,
+  auth CPU=0 sau settle, `camoufox-bin` count ve 0 (khong leak). Mot proc
+  `multiprocessing.resource_tracker` idle ton tai la BINH THUONG (helper cua spawn).
 
 ### G2G Scanner 401 During Extract
 
