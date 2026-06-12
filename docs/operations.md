@@ -360,7 +360,23 @@ con KHONG dung lai. Mot instance spin DA xay ra (truoc fix) chi clear duoc bang 
    voi cached cookies + `x-xsrf-token` + `x-client-build-time` headers. Eldorado
    tra `Set-Cookie` chua IdToken moi. Auth thu cach nay TRUOC moi cycle (~13 min).
 2. **Camoufox fallback (~30s, browser)** — chi khi backend refresh fail (vd. khi
-   chua co IdToken vao session moi).
+   khong profile nao con RefreshToken hop le → can re-login VNC).
+
+**Cold-start backend refresh tu DISK (fix 2026-06-12)**: `_try_backend_refresh`
+thu warm in-memory bundle truoc, roi doc RefreshToken con han tu **cookies.sqlite
+cua tung profile** (`_read_eldo_disk_cookies`). Vi vay sau MOI restart auth, Eldo
+khoi phuc qua backend refresh (~1s, no browser), KHONG dung Camoufox.
+
+> **⚠️ Tai sao quan trong — Camoufox path STRIP session tren disk**: Khi mo profile
+> headless voi IdToken DA het han, Eldo set-cookie **xoa `__Host-Eldorado*`** → persistent
+> context ghi trang thai da-xoa xuong `cookies.sqlite` → **RefreshToken bi wipe vinh vien**,
+> profile logged out (truoc fix: `chrome_profile_eldo` mat RefreshToken 29-ngay sau 1 lan
+> capture headless; `bak2` song chi vi IdToken con han). Backend refresh thi chi refresh
+> IdToken, KHONG bao gio xoa/rotate RefreshToken. → Sau fix, Camoufox chi chay khi that su
+> can re-login (khong con disk RefreshToken nao), nen khong con strip nham.
+>
+> **Trieu chung con sot**: profile nao da bi strip TRUOC fix (vd. main) van logged out tren
+> disk → can re-login VNC mot lan (xem quy trinh duoi); sau do se ben vung.
 
 **KHONG dung AWS Cognito truc tiep**: Eldorado configured client voi secret →
 `cognito-idp.us-east-2.amazonaws.com` tra `NotAuthorizedException: SECRET_HASH
