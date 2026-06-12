@@ -6,77 +6,70 @@ ERP webhook payloads, or marketplace state.
 
 ## Commands
 
-This project has **no automated test suite** and **no CI**. Verification happens
-through the live server and a few paramiko-based scripts.
+No automated test suite, no CI. Verification is via syntax check + the live server
+(paramiko to `192.168.2.220`). Full command set: `.ai/test-commands.md` and
+`docs/operations.md` → "AI Operator Notes".
 
 ```bash
 # Syntax check before deploying any .py
 python -c "import py_compile; py_compile.compile('<file>', doraise=True); print('OK')"
 
-# Full process health check (paramikoes to 192.168.2.220)
+# Full process health check (paramiko to 192.168.2.220)
 python scripts/check_all_processes.py
 
 # Auth /health (G2G JWT + Eldo cookies/logged_in)
 ssh root@192.168.2.220 'curl -s http://localhost:8010/health | python -m json.tool'
-
-# Recent scanner paste activity
-ssh root@192.168.2.220 'tail -c 4000 /tmp/g2g_scanner.log /tmp/eldo_scanner.log'
-
-# Phase 4 Eldorado + Phase 5 G2G backend refresh cycles
-ssh root@192.168.2.220 'grep -E "\[(ELDO|G2G)\] (Trying backend|backend refresh)" /tmp/auth*.log | tail -20'
-
-# Order DB pending state
-ssh root@192.168.2.220 'venv/bin/python -c "import sqlite3; c=sqlite3.connect(\"data/orders.db\"); print(\"DETECTED\", c.execute(\"SELECT count(*) FROM orders WHERE status=\\\"DETECTED\\\"\").fetchone()[0])"'
 ```
 
-There is `tests/` but contents are ad-hoc paramiko scripts (`tests/test_g2g_api.py`,
-`tests/check_pending.py`, ...). Treat them as **dev probes**, not a regression
-suite. Don't pretend `pytest` is meaningful here.
+`tests/` holds ad-hoc paramiko probes, not a regression suite — don't pretend
+`pytest` is meaningful here.
 
 ## Rules
 
-- **One scope per session.** When the work fans out, write a handoff to
-  `.ai/handoff.md` and open a new session — don't let the same conversation
-  chase three bugs.
-- **Read the existing pattern before writing new code.** Look at
-  `.ai/coding-standards.md` and the closest sibling module (e.g. study
-  `shared/g2g_auth.py` before extending `shared/eldo_auth.py`).
+- **One scope per session.** When work fans out, write `.ai/handoff.md` and open
+  a new session (skill `session-handoff`).
+- **Read the existing pattern first.** Check `.ai/coding-standards.md` and the
+  closest sibling module (e.g. study `shared/g2g_auth.py` before extending
+  `shared/eldo_auth.py`).
 - **Plan before code on anything non-trivial.** Write the plan into
   `.ai/current-plan.md` (Goal / Allowed files / Do-not-touch / Steps /
-  Acceptance / Risks) and get user approval before editing source.
-- **Deploy is paramiko, not ssh client.** Always use the python `paramiko`
-  pattern documented in `docs/operations.md` → "AI Operator Notes".
-  `nohup … &` over `exec_command` hangs the channel; use
-  `setsid + </dev/null + & disown` via `Transport.open_session()`.
-- **`pkill -f` self-match trap**: a bash session whose cmdline contains the
-  target string matches itself. Use `pgrep -af <pat> | xargs -r kill -9` for
-  each pattern in its own `exec_command`, never a chain.
+  Acceptance / Risks) and get approval before editing source.
+- **Deploy is paramiko, not the ssh client**, and watch the `pkill -f`
+  self-match + watchdog-respawn traps — see skill `debug-protocol` and
+  `docs/operations.md`.
 - **Never amend or `git push --force` to `main` without explicit ask.**
-- **No secrets in code.** `.env.example` lists the env vars; real secrets live
-  in `.env` (not committed) on the bot server.
-- **Commit messages**: conventional-commits style (`feat:`, `fix:`, `docs:`,
-  `chore:`, `refactor:`). Subject ≤72 chars, body explains *why*, sign-off
-  with `Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>` when an
-  agent did the bulk of the work.
+- **No secrets in code.** `.env.example` lists vars; real secrets live in `.env`
+  (not committed) on the bot server.
+- **Default model glm-4.7.** Use glm-5.1 only for plan / hard / long tasks, and
+  off-peak (outside 13:00–17:00 VN). When unsure, ask instead of guessing.
+- **Commit messages**: conventional-commits (`feat:`/`fix:`/`docs:`/`chore:`/
+  `refactor:`), subject ≤72 chars, body explains *why*. Sign-off
+  `Co-Authored-By: <Model-Name> <email>` when an agent did the bulk (e.g.
+  `Co-Authored-By: GLM-4.7 <noreply@zhipuai.cn>`).
+
+## Workflow
+
+Plan → Code → Debug → commit → log; review before merge. Full per-mode loop,
+model map, and quota discipline live in `.ai/workflow-reference.md`. Protocols
+auto-load as skills: `review-diff` (diff review + when to escalate to Opus),
+`debug-protocol` (root-cause + gotchas), `session-handoff` (closing a session).
 
 ## Out of scope (do not touch without explicit approval)
 
 - `.env` files on any server — secrets, channel webhooks, ERP API keys
-- `/opt/BotPasteDon/data/orders.db` rows — never `DELETE` outside of
-  documented troubleshooting recipes in `docs/operations.md`
+- `data/orders.db` rows — never `DELETE` outside documented troubleshooting
+  recipes in `docs/operations.md`
 - ERP `Sell Order` workflow_state on prod ERP (`192.168.2.100`)
 - Live Discord webhook URLs in `shared/config.py` SCANNER_CONFIG mappings
-- `chrome_profile_eldo*` directories on the bot server — these hold the live
-  Cognito session; the only sanctioned way to refresh them is the VNC
-  re-login procedure in `docs/operations.md`
-- `auth/main.py` Eldorado capture/refresh path without first reading the
-  Phase 4 design in `docs/architecture.md` → Eldorado Auth section
+- `chrome_profile_eldo*` on the bot server — live Cognito session; refresh only
+  via the VNC re-login procedure in `docs/operations.md`
+- `auth/main.py` Eldorado capture/refresh path without first reading
+  `docs/architecture.md` → Eldorado Auth section
 
-## Sensitive areas — require Opus review before merge
+## Sensitive areas — require Claude Opus review before merge
 
-- `auth/main.py` — Eldorado backend refresh, G2G JWT capture, profile rotation
-- `shared/database.py` schema changes — production data lives here
-- ERP webhook payload composition (`scanners/main.py`, `status_sync/*`) —
-  affects accounting state
-- `status_sync/*.py` push logic — can mass-mutate `workflow_state` across orders
-- Anything in `coordinator/` that dispatches delivery tasks (touches money flow)
+- `auth/main.py` — Eldo backend refresh, G2G JWT capture, profile rotation
+- `shared/database.py` — schema changes (production data lives here)
+- `scanners/main.py`, `status_sync/*` — ERP webhook payload (money fields
+  `total_price`, `earning`, `channel_fee`); can mass-mutate `workflow_state`
+- `coordinator/*` — delivery dispatch (money flow)

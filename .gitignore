@@ -41,8 +41,11 @@ error_*.png
 # Claude
 .claude/
 
-# Agent context (private working state — current-plan, handoff, decisions)
-.ai/
+# Agent context (.ai/) and agent config (.roo/, .roomodes, plans/) are
+# committed with the code — version-controlled project knowledge, not private
+# state. Per-session scratch is committed too; uncomment if churn gets noisy.
+# .ai/current-plan.md
+# .ai/handoff.md
 
 # Old root-level files (deleted, replaced by modules/)
 /GegeOrder.py
