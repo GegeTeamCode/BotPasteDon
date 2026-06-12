@@ -900,27 +900,6 @@ def _eldo_backend_refresh(cookies: dict, xsrf_token: str, user_agent: str = "",
     return updated
 
 
-def _eldo_capture_worker(profile_dir, result_q):
-    """Subprocess entry: run one Camoufox capture, hand the result back via queue.
-
-    Calls os.setsid() first so the parent can SIGKILL the whole browser tree
-    (Playwright node driver + camoufox-bin) as one process group if close() hangs.
-    """
-    try:
-        os.setsid()
-    except Exception:
-        pass
-    try:
-        data = EldoAuth._capture_single(profile_dir)
-    except Exception as e:
-        logger.error("[ELDO] capture worker crashed on %s: %s", profile_dir, e)
-        data = {}
-    try:
-        result_q.put(data)
-    except Exception:
-        pass
-
-
 def _eldo_capture_isolated(profile_dir: str, timeout_sec: int = 200) -> dict:
     """Run one Camoufox capture in a spawned subprocess with a hard timeout.
 
@@ -935,10 +914,14 @@ def _eldo_capture_isolated(profile_dir: str, timeout_sec: int = 200) -> dict:
     """
     import multiprocessing as _mp
     import queue as _queue
+    # Worker lives in its own module (auth._capture_proc) so multiprocessing
+    # spawn re-imports it cleanly regardless of how this service was launched
+    # (`python -m auth.main` makes THIS module __main__, which complicates spawn).
+    from auth._capture_proc import capture_worker
 
     ctx = _mp.get_context("spawn")
     result_q = ctx.Queue()
-    proc = ctx.Process(target=_eldo_capture_worker, args=(profile_dir, result_q))
+    proc = ctx.Process(target=capture_worker, args=(profile_dir, result_q))
     proc.start()
     data = {}
     try:
