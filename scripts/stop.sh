@@ -5,6 +5,12 @@ cd /opt/BotPasteDon
 
 echo "[$(date +%H:%M:%S)] Stopping BotPasteDon services..."
 
+# Stop the systemd-managed watchdog FIRST. Otherwise its Restart=always would
+# resurrect watchdog within RestartSec and it would respawn the very services we
+# are about to kill. No-op (|| true) if the unit isn't installed — the
+# pattern-kill of watchdog.py below is the fallback for dev boxes.
+systemctl stop bot-watchdog.service 2>/dev/null || true
+
 # Reverse-dependency order: stop watchdog first so it doesn't respawn things
 # we are about to kill, then dashboard / scanners / coordinator / workers,
 # then auth last (its profile cleanup runs on SIGTERM).

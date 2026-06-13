@@ -5,6 +5,43 @@ Mới nhất ở trên cùng.
 
 ---
 
+## 2026-06-13 — Supervisor: GIỮ watchdog/heartbeat, watchdog tự được systemd giám sát
+
+**Quyết định:** Mô hình giám sát process là **một launcher duy nhất**:
+`botpaste.service` (Type=forking) → `scripts/start.sh` nohup 8 service →
+`watchdog.py` giám sát qua heartbeat trong `data/orders.db` và respawn theo tier.
+Bản thân watchdog được bọc trong `deploy/bot-watchdog.service` (`Restart=always`,
+`After=`+`PartOf=botpaste.service`) để không còn là single point of failure.
+start.sh khởi động watchdog bằng `systemctl start --no-block bot-watchdog`
+(idempotent, có nohup fallback cho dev box); stop.sh `systemctl stop
+bot-watchdog` TRƯỚC khi kill để Restart=always không hồi sinh nó giữa lúc tear-down.
+
+**KHÔNG enable `bot-*.service` per-service song song với botpaste.service.** Hai
+supervisor cùng lúc = nguồn duplicate-on-boot. (6 unit `bot-*.service` +
+`start_all.sh`/`stop_all.sh` chưa từng được cài trên server — file chết, là mìn
+ngầm — nên đã XÓA khỏi `deploy/` trong cùng commit này.)
+
+**Ngữ cảnh:** Sự cố duplicate scanner 2026-06-13. Điều tra server: chỉ
+botpaste.service enabled, không duplicate thực tế. Nhưng watchdog (pid nohup từ
+start.sh) không được ai dựng lại nếu nó chết → toàn bộ self-heal sập âm thầm.
+
+**Alternative đã loại:**
+
+- *Chuyển hẳn sang systemd per-service (`Restart=on-failure`)*: loại vì systemd
+  chỉ phản ứng khi process **exit**, KHÔNG bắt được trường hợp **treo** (Camoufox
+  `close()`-spin, Chrome hang) — vốn rất hay xảy ra ở browser automation. Heartbeat
+  bắt được treo. Ngoài ra restart 1 unit không chạy được cleanup chéo của start.sh
+  (kill orphan chromedriver/camoufox, xóa SingletonLock 4 profile, free 5 port),
+  và mất restart theo tier phụ thuộc (auth → workers → coordinator → scanners).
+  `WatchdogSec` trong các unit cũ vô dụng vì service ghi heartbeat SQLite chứ
+  không gọi `sd_notify(WATCHDOG=1)`.
+
+**Liên quan:** Bug watchdog `find_running_pids` — token scanner trước đây là
+`"scanners.main"` cho cả 2 platform nên 1 scanner sống che 1 scanner chết
+(watchdog không restart cái chết). Đã fix: token kèm `--platform <plat>`.
+
+---
+
 ## 2026-06-10 — g2g_scanner Step 3: retry `get_order_detail` 3 lần, KHÔNG scan `delivering` state
 
 **Quyết định:** Trong `scanners/g2g_scanner_api.py::_do_extract`, wrap Step 3

@@ -1,0 +1,24 @@
+[Unit]
+Description=BotPasteDon Watchdog — heartbeat-based service supervisor
+# Start AFTER the umbrella unit so the 8 services (and their fresh heartbeats)
+# exist before watchdog begins checking. PartOf= makes `systemctl stop/restart
+# botpaste` propagate to the watchdog so they tear down together.
+After=botpaste.service network-online.target
+Wants=network-online.target
+PartOf=botpaste.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/BotPasteDon
+# Runs as root (same as botpaste.service / start.sh) so it can SIGTERM/SIGKILL
+# and re-spawn the other root-owned services.
+ExecStart=/opt/BotPasteDon/venv/bin/python scripts/watchdog.py
+Restart=always
+RestartSec=10
+# Keep the /tmp/watchdog.log convention the rest of the tooling reads.
+# Requires systemd >= 240; if older, swap to StandardOutput=journal.
+StandardOutput=append:/tmp/watchdog.log
+StandardError=append:/tmp/watchdog.log
+
+[Install]
+WantedBy=multi-user.target

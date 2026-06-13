@@ -115,10 +115,19 @@ start_services() {
     log "[7/9] Status sync started (PID: $!)"
 
     # 8. Watchdog (must start AFTER everything else — otherwise it might
-    #    interpret missing heartbeats as crashes and respawn duplicates)
+    #    interpret missing heartbeats as crashes and respawn duplicates).
+    #    Owned by systemd (bot-watchdog.service, Restart=always) so the watchdog
+    #    is itself supervised. `systemctl start` is idempotent — no duplicate if
+    #    botpaste.service's Wants= already started it. --no-block avoids any
+    #    deadlock when start.sh runs inside the botpaste.service boot transaction.
+    #    Falls back to nohup only on a dev box without the unit installed.
     log "[8/9] Starting watchdog..."
-    nohup $VENV scripts/watchdog.py > $LOG_DIR/watchdog.log 2>&1 &
-    log "[8/9] Watchdog started (PID: $!)"
+    if systemctl start --no-block bot-watchdog.service 2>/dev/null; then
+        log "[8/9] Watchdog started via systemd (bot-watchdog.service)"
+    else
+        nohup $VENV scripts/watchdog.py > $LOG_DIR/watchdog.log 2>&1 &
+        log "[8/9] Watchdog started via nohup fallback (PID: $!)"
+    fi
 
     # 9. Dashboard (web UI; no dependencies)
     log "[9/9] Starting dashboard..."

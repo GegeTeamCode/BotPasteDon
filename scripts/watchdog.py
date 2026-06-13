@@ -124,14 +124,16 @@ def find_running_pids(svc: dict) -> list:
     where start.sh and watchdog both boot services at the same time.
     """
     # Extract a stable match token from the cmd, e.g. "auth.main",
-    # "workers.eldorado_worker", "status_sync.main".
+    # "workers.eldorado_worker", "status_sync", "dashboard.server".
     parts = svc["cmd"].split()
     token = parts[-1] if parts else ""
-    # For scanners the platform flag is the last token; use the module instead.
-    if "--platform" in svc["cmd"]:
-        token = next((p for p in parts if p.startswith("-m") is False
-                      and "." in p), token)
-        token = "scanners.main"
+    # Both scanners share the module "scanners.main" and differ only by the
+    # --platform flag. Include that flag in the token so the guard matches ONLY
+    # this scanner — otherwise a live g2g scanner masks a dead eldo scanner and
+    # watchdog would never restart it.
+    if "--platform" in parts:
+        plat = parts[parts.index("--platform") + 1]
+        token = f"scanners.main --platform {plat}"
     try:
         out = subprocess.check_output(
             ["pgrep", "-f", token], stderr=subprocess.DEVNULL

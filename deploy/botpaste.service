@@ -2,6 +2,10 @@
 Description=BotPasteDon — All G2G Services
 After=network-online.target
 Wants=network-online.target
+# Bring up the supervised watchdog alongside the services. bot-watchdog.service
+# is ordered After= this unit and is PartOf= it, so it starts after the services
+# and stops when this unit stops.
+Wants=bot-watchdog.service
 
 [Service]
 Type=forking
