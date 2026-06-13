@@ -523,7 +523,7 @@ function dashboard() {
           try {
             const data = JSON.parse(e.data);
             const map = {};
-            (data.services || []).forEach(s => map[s.service_name] = s);
+            (data.services || []).forEach(s => map[s.id] = s);
             this.services = this._buildSortedServices(map);
             this.staleCount = data.stale_count || 0;
           } catch(ex) {}
