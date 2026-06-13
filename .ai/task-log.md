@@ -5,6 +5,19 @@ mới nhất ở trên cùng.
 
 ---
 
+## 2026-06-13
+
+- `feat(dashboard): SSE push realtime + Alpine.js reactive UI` — `7ed8c53`
+  - Backend: expand SSE broadcaster to push 5 event types on sub-intervals
+    (status 5s, auth 3s, orders 2s, log_update 1s). Incremental log reader
+    via byte-offset tracking. Order change detection via updated_at + count.
+    Initial data burst on SSE connect (after burst → add to broadcast list).
+  - Frontend: Alpine.js reactive UI, zero setInterval polling. Polished dark
+    theme with connection indicator, JWT progress bar, log level filters,
+    scroll-based auto-scroll disable.
+  - Review fixes: WARN→WARNING filter map, SSE orders pagination-safe,
+    @scroll replaces x-intersect, SSE race condition, order deletion detection.
+
 ## 2026-06-10
 
 - `feat(auth): two-tier G2G refresh — POST sls.g2g.com/user/refresh_access` — `452adf8`
