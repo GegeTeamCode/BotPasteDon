@@ -5,6 +5,51 @@ Mới nhất ở trên cùng.
 
 ---
 
+## 2026-06-13 — ERP `status_update` REGRESSION: khôi phục `db.set_value` + block `In Delivery`
+
+**Quyết định:** `gege_custom api/botpastedon.py::status_update` quay lại
+`frappe.db.set_value("Sell Order", so_name, "workflow_state", target)` +
+`frappe.db.commit()`, và **khôi phục guard** `_BLOCK_CURRENT_STATES = {"In Delivery"}`
+→ trả `{"status": "manual_required"}`, KHÔNG mutate. Đây là tái khẳng định 2 quyết
+định cũ (2026-06-07 PROTECTED states, 2026-06-10 set_value + block In Delivery) mà
+code đã regress khỏi.
+
+**Ngữ cảnh:** status_sync push lên prod ERP **fail 100%** (18/18 reject, 0 success).
+Nguyên nhân: ai đó đã đổi `status_update` sang `frappe.get_doc(...).save()` (để fire
+before_save inventory hooks) VÀ đánh mất guard `In Delivery`. Hậu quả khi chạy as
+Guest (`allow_guest=True`):
+- **HTTP 403 PermissionError**: `.save()` đổi `workflow_state` trigger
+  `validate_workflow → check_permission` trên pre-save snapshot — snapshot KHÔNG
+  carry `flags.ignore_permissions` (quirk Frappe v15) → Guest bị chặn.
+- **HTTP 417 MandatoryError**: `.save()` enforce field bắt buộc `currency_item`
+  (một số SO tạo qua fallback thiếu field này).
+
+`db.set_value` ghi thẳng field → bỏ qua doc lifecycle/workflow/permission/mandatory
+→ hết cả 403 lẫn 417. **An toàn vì** `In Delivery` là state webhook-reachable DUY
+NHẤT cần before_save inventory hooks (`_deliver_locked_inventory` / lock release);
+block nó đi thì mọi target còn lại (Completed/Refunded/Disputed/Delivered-từ-state-khác)
+không đụng hook nào → bỏ hook không mất gì.
+
+**Alternative đã loại:**
+
+- *Giữ `.save()` + `set_user("BotPasteDon")`*: user `BotPasteDon` KHÔNG tồn tại trên
+  cả dev `.228` lẫn prod `.100` (verified) → roleless → `validate_workflow` vẫn 403.
+  Đúng cái 2026-06-10 đã loại.
+- *`set_user("Administrator")`*: privilege escalation + audit dilution (đã loại 2026-06-10).
+- *Giữ `.save()` chạy dưới integration user thật có role workflow*: giữ được inventory
+  hooks nhưng phải tạo/cấp role user mới; user chọn bỏ hook (db.set_value) vì các
+  transition webhook không cần hook khi đã block In Delivery.
+
+**Verify (dev `.228`, site test.localhost, rollback — không đổi data):** Guest
+`db.set_value` Claimed→Completed OK; Guest `.save()` → PermissionError (đúng);
+`_BLOCK_CURRENT_STATES = {"In Delivery"}` hiện diện.
+
+**Trạng thái deploy:** ĐÃ áp + verify trên **dev `.228`**. **Prod `.100` CHƯA** —
+bộ phận ERP sẽ deploy lên prod sau và thông báo. Tới lúc đó status_sync trên prod
+vẫn 403/417 (bot không sai; order được giữ + retry mỗi 30 phút).
+
+---
+
 ## 2026-06-13 — Supervisor: GIỮ watchdog/heartbeat, watchdog tự được systemd giám sát
 
 **Quyết định:** Mô hình giám sát process là **một launcher duy nhất**:
