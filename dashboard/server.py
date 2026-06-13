@@ -32,6 +32,7 @@ from shared.logging_config import setup_logger
 logger = setup_logger("dashboard")
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
+STATIC_DIR = Path(__file__).parent / "static"
 
 SERVICES = {
     "auth_service": {"name": "Auth Service", "tier": 0},
@@ -452,6 +453,7 @@ async def run_dashboard():
     app.router.add_get("/api/log/{name}", handle_log)
     app.router.add_get("/api/logs", handle_logs_all)
     app.router.add_get("/api/events", handle_sse)
+    app.router.add_static("/static", STATIC_DIR)
 
     runner = web.AppRunner(app)
     await runner.setup()
