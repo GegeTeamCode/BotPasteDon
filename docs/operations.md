@@ -866,15 +866,14 @@ Tat ca scripts trong `scripts/`. Naming convention:
 |--------|----------|--------------|
 | [`start.sh`](../scripts/start.sh) | Start all 9 services theo thu tu phu thuoc (auth → workers → coordinator → scanners → status_sync → watchdog → dashboard). Mac dinh chay `cleanup()` truoc khi start; pass `--no-clean` de skip. | Sau reboot server hoac sau full stop |
 | [`stop.sh`](../scripts/stop.sh) | Stop all 9 services in reverse order (watchdog truoc, auth cuoi). Clean chromedriver/camoufox + 4 profile locks + free 5 ports. Filter bash launcher de tranh self-match. | Truoc khi reboot hoac maintenance lon |
-| [`watchdog.py`](../scripts/watchdog.py) | Long-running supervisor — check heartbeat moi 30s, restart service neu khong beat trong 90s | Luon chay (tu start.sh) |
+| [`watchdog.py`](../scripts/watchdog.py) | Long-running supervisor — check heartbeat moi 30s, restart service neu khong beat trong 90s. Chay duoi `bot-watchdog.service` (`Restart=always`) nen tu duoc systemd giam sat; start.sh `systemctl start`, stop.sh `systemctl stop` truoc khi kill. **Chi MOT launcher** — khong enable `bot-*.service` per-service song song (xem decisions.md 2026-06-13). | Luon chay (qua bot-watchdog.service) |
 
 ### Client-side ops — chay tu Windows host, dung paramiko vao server
 
 | Script | Muc dich | Output |
 |--------|----------|--------|
 | [`check_all_processes.py`](../scripts/check_all_processes.py) | Audit toan canh: liet ke 8 service, PID (chi count python, skip bash launcher), port, heartbeat. Bao `OK`/`DOWN`/`DUP xN`/`NO-PORT`. Cung in `/health` json. | Bang summary + verdict cuoi |
-| [`deploy_auth_patch.py`](../scripts/deploy_auth_patch.py) | Deploy `auth/main.py`: upload via SFTP → backup → stop watchdog → stop auth/browsers → plant lock files de verify cleanup → start auth → trigger /auth/eldo + /auth/g2g → in audit. | Step-by-step log |
-| [`deploy_workers.py`](../scripts/deploy_workers.py) | Deploy `workers/*.py` qua SFTP. Stop watchdog → kill workers → upload → start workers → restart watchdog → in audit + reachability probe. | Step log + audit table |
+| [`deploy_git.py`](../scripts/deploy_git.py) | **Cach deploy chinh thuc**: server la git checkout cua `origin/main`; script `git reset --hard origin/main` + restart service duoc named (stop bot-watchdog qua systemd truoc, restart sau). Abort neu server co drift chua commit. | Deploy log + running services |
 | [`deploy_open_eldo.py`](../scripts/deploy_open_eldo.py) | Launch Camoufox visible voi profile `chrome_profile_eldo` (main) tren Xvfb :99. Dung de xem session qua VNC. | Path log + connect info |
 | [`unlock_profiles.py`](../scripts/unlock_profiles.py) | Manual fallback khi auth tat hoan toan va profile co lock cu: pkill leftover camoufox + xoa Firefox/Chrome lock files cua all profiles → trigger /auth/eldo. Sau **2026-06-04** it khi can vi auth co auto-cleanup. | Cleanup log |
 | [`retry_post_evidence.py`](../scripts/retry_post_evidence.py) | Re-trigger ERP `post_evidence_to_marketplace` cho 1+ don da Completed nhung proof khong toi marketplace. Goi voi `skip_steps=['qty']` per SO. Xem muc "Tra lai bang chung". | Bang verdict per order |
@@ -911,8 +910,7 @@ Su dung theo flow trong [`docs/marketplace_auth.md`](marketplace_auth.md) muc "M
 ### Khi nao dung script nao
 
 ```
-Trien khai code moi cho auth        → deploy_auth_patch.py
-Trien khai code moi cho worker      → deploy_workers.py
+Trien khai code moi (bat ky service) → git push + deploy_git.py <service|all>
 Kiem tra he thong dang on khong     → check_all_processes.py
 Auth Eldo bi 401 mai khong khoi     → 1) check_all_processes.py
                                       2) xem /tmp/auth*.log

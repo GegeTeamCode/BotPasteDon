@@ -115,9 +115,14 @@ def main():
         ssh.close()
         return
 
-    # 3. Restart: stop watchdog -> restart each target -> restart watchdog
+    # 3. Restart: stop watchdog -> restart each target -> restart watchdog.
+    # Watchdog is owned by systemd (bot-watchdog.service, Restart=always); stop
+    # the unit so it stays down during the restart instead of resurrecting and
+    # respawning the services we are bouncing. pkill is the fallback for a box
+    # without the unit installed.
     print("\n>> stop watchdog")
-    run("pgrep -f 'watchdog.py' | xargs -r kill -9")
+    run("systemctl stop bot-watchdog.service 2>/dev/null; "
+        "pgrep -f 'scripts/watchdog.py' | xargs -r kill -9")
     for name in targets:
         pattern, start = SERVICES[name]
         print(f">> restart {name}")
@@ -126,7 +131,9 @@ def main():
         launch(start)
         time.sleep(3 if name != "auth" else 25)  # auth needs time for initial capture
     print(">> restart watchdog")
-    launch("nohup venv/bin/python scripts/watchdog.py > /tmp/watchdog.log 2>&1 &")
+    # systemctl start is idempotent; fall back to nohup if the unit isn't installed.
+    launch("systemctl start bot-watchdog.service 2>/dev/null || "
+           "nohup venv/bin/python scripts/watchdog.py > /tmp/watchdog.log 2>&1 &")
     time.sleep(2)
 
     # 4. Report
