@@ -34,9 +34,12 @@ ssh root@192.168.2.220 'curl -s http://localhost:8010/health | python -m json.to
 - **Plan before code on anything non-trivial.** Write the plan into
   `.ai/current-plan.md` (Goal / Allowed files / Do-not-touch / Steps /
   Acceptance / Risks) and get approval before editing source.
-- **Deploy is paramiko, not the ssh client**, and watch the `pkill -f`
-  self-match + watchdog-respawn traps — see skill `debug-protocol` and
-  `docs/operations.md`.
+- **Deploy is git-based — NEVER SCP / rsync / edit files on the server.** The
+  server `/opt/BotPasteDon` is a git checkout; hand-copying files creates drift
+  and `deploy_git.py` aborts on drift. Flow: `git commit` → `git push origin
+  main` → `python scripts/deploy_git.py <service>`. See skill `deploy`. SSH
+  mechanics (paramiko, `pkill -f` self-match, watchdog respawn) are in skill
+  `debug-protocol` and `docs/operations.md`.
 - **Never amend or `git push --force` to `main` without explicit ask.**
 - **No secrets in code.** `.env.example` lists vars; real secrets live in `.env`
   (not committed) on the bot server.

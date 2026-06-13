@@ -38,7 +38,10 @@ Escalate to **glm-5-turbo** only if the task is unusually complex.
 - If you're unsure about anything: ask the user rather than guessing.
 
 ## Deploy awareness
-- This project deploys via paramiko scripts (see `docs/operations.md`).
+- **Deploy is git-based: `git commit` → `git push origin main` → `python
+  scripts/deploy_git.py <service>`.** NEVER SCP/rsync or edit files on the
+  server — the server is a git checkout and `deploy_git.py` aborts on drift.
+  Full procedure + service names in skill `deploy`.
 - Never use `subprocess.run(["ssh",...])` — always paramiko.
 - Never use `pkill -f` in a multi-command SSH session — use
   `pgrep -af <pat> | xargs -r kill -9` per pattern, each in its own exec_command.
