@@ -71,7 +71,7 @@ SERVICE_REGISTRY = [
     },
     {
         "name": "status_sync",
-        "cmd": "venv/bin/python -u -m status_sync.main",
+        "cmd": "venv/bin/python -u -m status_sync",
         "log": "/tmp/status_sync.log",
         "env": {},
         "tier": 3,

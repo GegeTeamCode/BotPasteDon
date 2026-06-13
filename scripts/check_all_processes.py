@@ -20,7 +20,7 @@ EXPECTED = [
     ("workers.eldorado_worker",            "Eldo Worker",         8001),
     ("workers.g2g_worker",                 "G2G Worker",          8002),
     ("coordinator.main",                   "Coordinator",         8030),
-    ("status_sync.main",                   "Status Sync",         None),
+    ("status_sync",                        "Status Sync",         None),
     ("dashboard.server",                   "Dashboard",           8766),
     ("scripts/watchdog.py",                "Watchdog",            None),
 ]
