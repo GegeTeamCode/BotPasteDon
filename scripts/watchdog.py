@@ -70,6 +70,13 @@ SERVICE_REGISTRY = [
         "tier": 3,
     },
     {
+        "name": "status_sync",
+        "cmd": "venv/bin/python -u -m status_sync.main",
+        "log": "/tmp/status_sync.log",
+        "env": {},
+        "tier": 3,
+    },
+    {
         "name": "dashboard",
         "cmd": "venv/bin/python -u -m dashboard.server",
         "log": "/tmp/dashboard.log",
@@ -108,6 +115,50 @@ def kill_process(pid: int, name: str):
         logger.error("No permission to kill %s (pid %d)", name, pid)
 
 
+def find_running_pids(svc: dict) -> list:
+    """Return list of live PIDs already running this service's command.
+
+    Uses pgrep on the service's module path so it matches processes launched
+    by either watchdog OR start.sh/systemd. Filters out bash launchers and the
+    pgrep itself. This is the guard that prevents duplicate-spawn after a reset
+    where start.sh and watchdog both boot services at the same time.
+    """
+    # Extract a stable match token from the cmd, e.g. "auth.main",
+    # "workers.eldorado_worker", "status_sync.main".
+    parts = svc["cmd"].split()
+    token = parts[-1] if parts else ""
+    # For scanners the platform flag is the last token; use the module instead.
+    if "--platform" in svc["cmd"]:
+        token = next((p for p in parts if p.startswith("-m") is False
+                      and "." in p), token)
+        token = "scanners.main"
+    try:
+        out = subprocess.check_output(
+            ["pgrep", "-f", token], stderr=subprocess.DEVNULL
+        ).decode(errors="replace")
+    except subprocess.CalledProcessError:
+        return []  # pgrep exits 1 when no match
+    pids = []
+    my_pid = os.getpid()
+    for line in out.splitlines():
+        m = line.strip().split()
+        if not m:
+            continue
+        pid = int(m[0])
+        if pid == my_pid:
+            continue
+        cmdline = subprocess.check_output(
+            ["ps", "-o", "args=", "-p", str(pid)], stderr=subprocess.DEVNULL
+        ).decode(errors="replace")
+        # Drop bash launcher wrappers and the pgrep self-match.
+        if cmdline.startswith("bash -c") or cmdline.startswith("/bin/bash -c"):
+            continue
+        if "pgrep" in cmdline:
+            continue
+        pids.append(pid)
+    return pids
+
+
 def start_service(svc: dict) -> int:
     env = {**os.environ, **svc.get("env", {})}
     log_f = open(svc["log"], "a")
@@ -125,6 +176,16 @@ def restart_service(svc: dict, old_pid: int):
     name = svc["name"]
     kill_process(old_pid, name)
     time.sleep(1)
+    # GUARD: before starting a new instance, check if one is already alive.
+    # After a server reset, start.sh/systemd may have launched the service
+    # while the heartbeat table still held the OLD (dead) PID — watchdog would
+    # otherwise blindly spawn a duplicate. See operations.md "watchdog respawn
+    # trap" and the 2026-06-13 duplicate-scanner incident.
+    live = find_running_pids(svc)
+    if live:
+        logger.info("SKIP restart %s — already running pid=%s (heartbeat pid=%d was stale)",
+                    name, live, old_pid)
+        return
     new_pid = start_service(svc)
     logger.info("RESTARTED %s (old_pid=%d -> new_pid=%d)", name, old_pid, new_pid)
 
