@@ -5,457 +5,864 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BotPasteDon Dashboard</title>
 <style>
+/* ── CSS Variables ── */
 :root {
-  --bg: #0d1117; --surface: #161b22; --surface2: #1c2128;
-  --border: #30363d; --text: #c9d1d9; --text-dim: #8b949e;
-  --green: #3fb950; --red: #f85149; --yellow: #d29922; --blue: #58a6ff;
+  --bg: #0d1117; --surface: #161b22; --surface2: #1c2128; --surface3: #21262d;
+  --border: #30363d; --border-light: #3d444d;
+  --text: #e6edf3; --text-dim: #8b949e; --text-muted: #656d76;
+  --green: #3fb950; --green-dim: rgba(63,185,80,.15);
+  --red: #f85149; --red-dim: rgba(248,81,73,.15);
+  --yellow: #d29922; --yellow-dim: rgba(210,153,34,.15);
+  --blue: #58a6ff; --blue-dim: rgba(88,166,255,.15);
   --accent: #1f6feb; --purple: #bc8cff;
+  --radius: 10px; --radius-sm: 6px;
+  --shadow: 0 1px 3px rgba(0,0,0,.3);
+  --transition: .2s ease;
 }
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.5;min-height:100vh}
-.container{max-width:1280px;margin:0 auto;padding:16px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;min-height:100vh;overflow-x:hidden}
 
-/* Tabs */
-.tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px}
-.tab{padding:10px 20px;cursor:pointer;color:var(--text-dim);font-size:.9rem;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .15s}
+/* ── Layout ── */
+.container{max-width:1400px;margin:0 auto;padding:16px 20px}
+
+/* ── Header ── */
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 0;margin-bottom:4px}
+header h1{font-size:1.4rem;font-weight:700;display:flex;align-items:center;gap:10px;letter-spacing:-.02em}
+.header-actions{display:flex;gap:10px;align-items:center}
+
+/* ── Connection indicator ── */
+.conn-dot{width:10px;height:10px;border-radius:50%;display:inline-block;transition:all .3s}
+.conn-dot.connected{background:var(--green);box-shadow:0 0 8px var(--green)}
+.conn-dot.disconnected{background:var(--red);box-shadow:0 0 8px var(--red);animation:pulse-red 1.5s infinite}
+@keyframes pulse-red{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* ── Buttons ── */
+.btn{padding:7px 16px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface);color:var(--text);cursor:pointer;font-size:.82rem;font-weight:500;transition:all var(--transition);display:inline-flex;align-items:center;gap:6px}
+.btn:hover{border-color:var(--blue);color:var(--blue);background:var(--surface2)}
+.btn:active{transform:scale(.97)}
+.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-primary:hover{background:#388bfd;border-color:#388bfd;color:#fff}
+.btn-sm{padding:4px 10px;font-size:.76rem}
+.btn-danger{border-color:var(--red);color:var(--red)}
+.btn-danger:hover{background:var(--red-dim)}
+
+/* ── Tabs ── */
+.tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:20px;overflow-x:auto}
+.tab{padding:10px 22px;cursor:pointer;color:var(--text-dim);font-size:.88rem;font-weight:500;border-bottom:2px solid transparent;margin-bottom:-2px;transition:all var(--transition);white-space:nowrap;user-select:none}
 .tab:hover{color:var(--text)}
 .tab.active{color:var(--blue);border-bottom-color:var(--blue)}
-.tab-panel{display:none}.tab-panel.active{display:block}
+.tab-panel{display:none;animation:fadeIn .25s ease}
+.tab-panel.active{display:block}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
-/* Header */
-header{display:flex;justify-content:space-between;align-items:center;padding:8px 0;margin-bottom:8px}
-header h1{font-size:1.3rem;font-weight:600}
-.header-actions{display:flex;gap:8px;align-items:center}
-.btn{padding:6px 14px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);cursor:pointer;font-size:.82rem;transition:all .15s}
-.btn:hover{border-color:var(--blue);color:var(--blue)}
-.btn-primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.btn-primary:hover{background:#388bfd}
-.btn-sm{padding:4px 10px;font-size:.78rem}
-.btn-danger{border-color:var(--red);color:var(--red)}
-
-/* Cards grid */
-.card-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+/* ── Cards ── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px;margin-bottom:14px;box-shadow:var(--shadow);transition:border-color var(--transition)}
+.card:hover{border-color:var(--border-light)}
+.card h3{font-size:.92rem;margin-bottom:12px;display:flex;align-items:center;gap:8px;font-weight:600}
+.card-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
 @media(max-width:700px){.card-grid{grid-template-columns:1fr}}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:14px}
-.card h3{font-size:.9rem;margin-bottom:10px;display:flex;align-items:center;gap:8px}
-.card h3 .badge{font-size:.68rem;padding:2px 8px;border-radius:10px;font-weight:500}
-.badge-ok{background:rgba(63,185,80,.15);color:var(--green)}
-.badge-warn{background:rgba(210,153,34,.15);color:var(--yellow)}
-.badge-err{background:rgba(248,81,73,.15);color:var(--red)}
-.stat-row{display:flex;justify-content:space-between;padding:3px 0;font-size:.82rem}
-.stat-row .label{color:var(--text-dim)}
 
-/* Profile cards */
-.profile-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
-@media(max-width:900px){.profile-grid{grid-template-columns:1fr 1fr}}
-.profile-card{background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;font-size:.78rem}
-.profile-card.active{border-color:var(--blue);box-shadow:0 0 4px rgba(88,166,255,.2)}
+/* ── Badge ── */
+.badge{font-size:.7rem;padding:2px 9px;border-radius:10px;font-weight:600;letter-spacing:.02em}
+.badge-ok{background:var(--green-dim);color:var(--green)}
+.badge-warn{background:var(--yellow-dim);color:var(--yellow)}
+.badge-err{background:var(--red-dim);color:var(--red)}
+.badge-info{background:var(--blue-dim);color:var(--blue)}
+
+/* ── Stat rows ── */
+.stat-row{display:flex;justify-content:space-between;padding:4px 0;font-size:.84rem}
+.stat-row .label{color:var(--text-dim)}
+.stat-row .value{font-weight:500;font-variant-numeric:tabular-nums}
+
+/* ── Progress bar ── */
+.progress-bar{height:4px;background:var(--surface3);border-radius:2px;margin-top:6px;overflow:hidden}
+.progress-bar .fill{height:100%;border-radius:2px;transition:width 1s linear}
+.progress-bar .fill.green{background:var(--green)}
+.progress-bar .fill.yellow{background:var(--yellow)}
+.progress-bar .fill.red{background:var(--red)}
+
+/* ── Status dot ── */
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:middle}
+.dot.healthy{background:var(--green);box-shadow:0 0 6px var(--green)}
+.dot.stale{background:var(--red);box-shadow:0 0 6px var(--red);animation:pulse-dot 2s infinite}
+.dot.unknown{background:var(--text-muted)}
+@keyframes pulse-dot{0%,100%{box-shadow:0 0 6px var(--red)}50%{box-shadow:0 0 12px var(--red)}}
+
+/* ── Tables ── */
+.table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse}
+th,td{padding:9px 14px;text-align:left;font-size:.82rem}
+th{background:var(--bg);color:var(--text-dim);font-weight:600;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:1}
+td{border-bottom:1px solid var(--border)}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:rgba(31,111,235,.04)}
+
+/* ── Age badge ── */
+.age-badge{font-size:.72rem;padding:2px 8px;border-radius:4px;font-weight:500;font-variant-numeric:tabular-nums}
+.age-badge.healthy{background:var(--green-dim);color:var(--green)}
+.age-badge.stale{background:var(--red-dim);color:var(--red)}
+.age-badge.unknown{background:rgba(101,109,118,.15);color:var(--text-muted)}
+
+/* ── Order status ── */
+.order-status{font-size:.72rem;padding:2px 8px;border-radius:4px;font-weight:600;white-space:nowrap}
+.order-status.DETECTED{background:rgba(101,109,118,.15);color:var(--text-muted)}
+.order-status.NOTIFIED,.order-status.THREAD_CREATED{background:var(--blue-dim);color:var(--blue)}
+.order-status.DELIVERING{background:var(--yellow-dim);color:var(--yellow)}
+.order-status.COMPLETED{background:var(--green-dim);color:var(--green)}
+.order-status.FAILED{background:var(--red-dim);color:var(--red)}
+.order-status.RETRY_PENDING{background:rgba(188,140,255,.15);color:var(--purple)}
+
+/* ── Profile cards ── */
+.profile-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px;margin-top:8px}
+.profile-card{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 12px;font-size:.82rem;transition:all var(--transition)}
+.profile-card.active{border-color:var(--blue);box-shadow:0 0 8px rgba(88,166,255,.15)}
 .profile-card.dead{border-color:var(--red)}
 .profile-name{font-weight:600;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center}
 
-/* Status dot */
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
-.dot.healthy{background:var(--green);box-shadow:0 0 4px var(--green)}
-.dot.stale{background:var(--red);box-shadow:0 0 4px var(--red)}
-.dot.unknown{background:var(--text-dim)}
+/* ── Login bar ── */
+.login-bar{display:none;padding:10px 16px;border-radius:var(--radius-sm);margin-bottom:14px;font-size:.84rem;align-items:center;gap:8px;font-weight:500;animation:fadeIn .3s ease}
+.login-bar.show{display:flex}
+.login-bar.logging_in,.login-bar.need_otp{background:var(--yellow-dim);border:1px solid var(--yellow);color:var(--yellow)}
+.login-bar.success{background:var(--green-dim);border:1px solid var(--green);color:var(--green)}
+.login-bar.failed{background:var(--red-dim);border:1px solid var(--red);color:var(--red)}
 
-/* Tables */
-table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
-th,td{padding:8px 12px;text-align:left;font-size:.82rem}
-th{background:var(--bg);color:var(--text-dim);font-weight:500;border-bottom:1px solid var(--border)}
-td{border-bottom:1px solid var(--border)}
-tr:last-child td{border-bottom:none}
-tr:hover td{background:rgba(31,111,235,.05)}
-.age-badge{font-size:.72rem;padding:1px 6px;border-radius:4px;background:rgba(63,185,80,.1);color:var(--green)}
-.age-badge.stale{background:rgba(248,81,73,.1);color:var(--red)}
-.age-badge.unknown{background:rgba(139,148,158,.1);color:var(--text-dim)}
-.order-status{font-size:.72rem;padding:1px 6px;border-radius:4px;font-weight:500}
-.order-status.DETECTED{background:rgba(139,148,158,.15);color:var(--text-dim)}
-.order-status.NOTIFIED,.order-status.THREAD_CREATED{background:rgba(88,166,255,.15);color:var(--blue)}
-.order-status.DELIVERING{background:rgba(210,153,34,.15);color:var(--yellow)}
-.order-status.COMPLETED{background:rgba(63,185,80,.15);color:var(--green)}
-.order-status.FAILED{background:rgba(248,81,73,.15);color:var(--red)}
-
-/* Login bar */
-.login-bar{display:none;padding:8px 14px;border-radius:6px;margin-bottom:12px;font-size:.82rem;align-items:center;gap:8px}
-.login-bar.logging_in,.login-bar.need_otp{display:flex;background:rgba(210,153,34,.1);border:1px solid var(--yellow);color:var(--yellow)}
-.login-bar.success{display:flex;background:rgba(63,185,80,.1);border:1px solid var(--green);color:var(--green)}
-.login-bar.failed{display:flex;background:rgba(248,81,73,.1);border:1px solid var(--red);color:var(--red)}
-
-/* OTP Modal */
-.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:1000;justify-content:center;align-items:center}
+/* ── OTP Modal ── */
+.modal-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.65);z-index:1000;justify-content:center;align-items:center;backdrop-filter:blur(4px)}
 .modal-overlay.active{display:flex}
-.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:28px;width:360px;max-width:90vw;text-align:center}
-.modal h2{margin-bottom:6px;font-size:1.1rem}
-.modal p{color:var(--text-dim);margin-bottom:16px;font-size:.85rem}
-.otp-inputs{display:flex;gap:6px;justify-content:center;margin-bottom:16px}
-.otp-inputs input{width:40px;height:48px;text-align:center;font-size:1.3rem;font-weight:600;background:var(--bg);border:2px solid var(--border);border-radius:6px;color:var(--text);outline:none;transition:border-color .15s}
-.otp-inputs input:focus{border-color:var(--blue)}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:32px;width:380px;max-width:90vw;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.4);animation:modalIn .25s ease}
+@keyframes modalIn{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
+.modal h2{margin-bottom:8px;font-size:1.15rem}
+.modal p{color:var(--text-dim);margin-bottom:18px;font-size:.88rem}
+.otp-inputs{display:flex;gap:8px;justify-content:center;margin-bottom:18px}
+.otp-inputs input{width:42px;height:52px;text-align:center;font-size:1.4rem;font-weight:700;background:var(--bg);border:2px solid var(--border);border-radius:var(--radius-sm);color:var(--text);outline:none;transition:border-color var(--transition)}
+.otp-inputs input:focus{border-color:var(--blue);box-shadow:0 0 8px rgba(88,166,255,.2)}
 
-/* Log viewer */
-.log-container{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
-.log-tabs{display:flex;border-bottom:1px solid var(--border);overflow-x:auto}
-.log-tab{padding:6px 14px;cursor:pointer;font-size:.78rem;color:var(--text-dim);border-bottom:2px solid transparent;white-space:nowrap}
+/* ── Log viewer ── */
+.log-container{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)}
+.log-toolbar{display:flex;border-bottom:1px solid var(--border);align-items:center;padding:0 8px;gap:0}
+.log-tab{padding:8px 14px;cursor:pointer;font-size:.78rem;color:var(--text-dim);border-bottom:2px solid transparent;white-space:nowrap;transition:all var(--transition);user-select:none}
 .log-tab:hover{color:var(--text)}
 .log-tab.active{color:var(--blue);border-bottom-color:var(--blue)}
-.log-content{height:400px;overflow-y:auto;font-family:'Cascadia Code','Fira Code',monospace;font-size:.75rem;line-height:1.6;padding:8px}
-.log-line{white-space:pre-wrap;word-break:break-all}
-.log-line .ts{color:var(--text-dim)}
-.log-line .err{color:var(--red)}
-.log-line .warn{color:var(--yellow)}
-.log-line .info{color:var(--green)}
+.log-toolbar-right{margin-left:auto;display:flex;gap:6px;align-items:center;padding-right:4px}
+.log-filter{padding:3px 8px;font-size:.7rem;border-radius:4px;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--text-dim);transition:all var(--transition)}
+.log-filter:hover{border-color:var(--text-dim)}
+.log-filter.active{border-color:var(--blue);color:var(--blue);background:var(--blue-dim)}
+.log-content{height:420px;overflow-y:auto;font-family:'Cascadia Code','Fira Code','JetBrains Mono',monospace;font-size:.76rem;line-height:1.65;padding:10px 12px;scroll-behavior:smooth}
+.log-line{white-space:pre-wrap;word-break:break-all;padding:1px 0}
+.log-line .ts{color:var(--text-muted)}
+.log-line.err{color:var(--red)}
+.log-line.warn{color:var(--yellow)}
+.log-line.info{color:var(--green)}
+.log-line.debug{color:var(--text-dim)}
+.log-line.highlight{background:rgba(88,166,255,.06);border-left:2px solid var(--blue);padding-left:8px}
+.log-empty{color:var(--text-muted);text-align:center;padding:40px;font-size:.88rem}
+.log-stats{font-size:.72rem;color:var(--text-muted);padding:4px 8px;border-top:1px solid var(--border)}
 
-.spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite;margin-right:4px}
+/* ── Spinner ── */
+.spinner{display:inline-block;width:12px;height:12px;border:2px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite;margin-right:6px;vertical-align:middle}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* Pagination */
-.pagination{display:flex;justify-content:center;gap:8px;margin-top:12px;align-items:center}
-.pagination .info{color:var(--text-dim);font-size:.82rem}
+/* ── Skeleton loader ── */
+.skeleton{background:linear-gradient(90deg,var(--surface2) 25%,var(--surface3) 50%,var(--surface2) 75%);background-size:200% 100%;animation:skeleton 1.5s infinite;border-radius:4px;height:16px;margin:4px 0}
+@keyframes skeleton{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* ── Pagination ── */
+.pagination{display:flex;justify-content:center;gap:10px;margin-top:14px;align-items:center}
+.pagination .info{color:var(--text-dim);font-size:.82rem;font-variant-numeric:tabular-nums}
+
+/* ── Flash highlight ── */
+.flash{animation:flash-bg .6s ease}
+@keyframes flash-bg{0%{background:rgba(88,166,255,.12)}100%{background:transparent}}
+
+/* ── Clock ── */
+.clock{color:var(--text-dim);font-size:.82rem;font-variant-numeric:tabular-nums;min-width:70px;text-align:right}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:var(--border-light)}
+
+/* ── Responsive ── */
+@media(max-width:900px){
+  .card-grid{grid-template-columns:1fr}
+  .profile-grid{grid-template-columns:1fr 1fr}
+  .container{padding:12px}
+  header h1{font-size:1.15rem}
+}
+@media(max-width:500px){
+  .profile-grid{grid-template-columns:1fr}
+  th,td{padding:6px 8px;font-size:.76rem}
+}
 </style>
 </head>
-<body>
+<body x-data="dashboard()" x-init="init()">
+
 <div class="container">
+  <!-- Header -->
   <header>
-    <h1>BotPasteDon</h1>
+    <h1>
+      <span class="conn-dot" :class="connected ? 'connected' : 'disconnected'"
+            :title="connected ? 'SSE Connected' : 'SSE Disconnected'"></span>
+      BotPasteDon
+    </h1>
     <div class="header-actions">
-      <span id="clock" style="color:var(--text-dim);font-size:.82rem"></span>
-      <button class="btn btn-primary" onclick="triggerAutoLogin()">Auto Login</button>
+      <span class="clock" x-text="clock"></span>
+      <button class="btn btn-primary" @click="triggerAutoLogin()" :disabled="loginActive">
+        <template x-if="loginActive"><span class="spinner"></span></template>
+        Auto Login
+      </button>
     </div>
   </header>
-  <div id="login-bar" class="login-bar"></div>
+
+  <!-- Login bar -->
+  <div id="login-bar" class="login-bar" :class="loginBarClass" x-show="loginBarClass" x-text="loginBarText"></div>
 
   <!-- Tabs -->
   <div class="tabs">
-    <div class="tab active" data-tab="overview">Overview</div>
-    <div class="tab" data-tab="profiles">Profiles</div>
-    <div class="tab" data-tab="orders">Orders</div>
-    <div class="tab" data-tab="logs">Logs</div>
+    <div class="tab" :class="activeTab==='overview'?'active':''" @click="switchTab('overview')">Overview</div>
+    <div class="tab" :class="activeTab==='profiles'?'active':''" @click="switchTab('profiles')">Profiles</div>
+    <div class="tab" :class="activeTab==='orders'?'active':''" @click="switchTab('orders')">Orders</div>
+    <div class="tab" :class="activeTab==='logs'?'active':''" @click="switchTab('logs')">Logs</div>
   </div>
 
-  <!-- Overview -->
-  <div class="tab-panel active" id="panel-overview">
+  <!-- ═══ Overview ═══ -->
+  <div class="tab-panel" :class="activeTab==='overview'?'active':''">
     <div class="card-grid">
+      <!-- G2G Card -->
       <div class="card">
-        <h3>G2G <span id="g2g-badge" class="badge badge-ok">Fresh</span></h3>
-        <div class="stat-row"><span class="label">JWT</span><span id="g2g-jwt">--</span></div>
-        <div class="stat-row"><span class="label">Expires</span><span id="g2g-exp">--</span></div>
-        <div class="stat-row"><span class="label">Profile</span><span id="g2g-profile">--</span></div>
+        <h3>
+          G2G
+          <span class="badge" :class="g2gBadge.cls" x-text="g2gBadge.text"></span>
+        </h3>
+        <div class="stat-row"><span class="label">JWT</span><span class="value" x-text="auth.g2g?.has_jwt ? 'Yes' : 'None'"></span></div>
+        <div class="stat-row"><span class="label">Expires</span><span class="value" x-text="fmtDur(auth.g2g?.jwt_expires_in || 0)"></span></div>
+        <div class="stat-row"><span class="label">Profile</span><span class="value" x-text="(auth.g2g?.active_profile || '--').replace('chrome_profile_','')"></span></div>
+        <div class="progress-bar">
+          <div class="fill" :class="jwtProgressCls" :style="`width:${jwtProgress}%`"></div>
+        </div>
       </div>
+      <!-- Eldo Card -->
       <div class="card">
-        <h3>Eldorado <span id="eldo-badge" class="badge badge-ok">Fresh</span></h3>
-        <div class="stat-row"><span class="label">Cookies</span><span id="eldo-cookies">--</span></div>
-        <div class="stat-row"><span class="label">Logged in</span><span id="eldo-logged">--</span></div>
-        <div class="stat-row"><span class="label">Profile</span><span id="eldo-profile">--</span></div>
+        <h3>
+          Eldorado
+          <span class="badge" :class="eldoBadge.cls" x-text="eldoBadge.text"></span>
+        </h3>
+        <div class="stat-row"><span class="label">Cookies</span><span class="value" x-text="auth.eldo?.cookies ? `Yes (${auth.eldo.cookies})` : 'No'"></span></div>
+        <div class="stat-row"><span class="label">Logged in</span><span class="value" x-text="auth.eldo?.logged_in ? 'Yes' : 'No'"></span></div>
+        <div class="stat-row"><span class="label">Profile</span><span class="value" x-text="(auth.eldo?.active_profile || '--').replace('chrome_profile_','')"></span></div>
       </div>
     </div>
-    <div class="card" style="margin-bottom:16px">
-      <h3>Services <span id="stale-count" style="color:var(--red);font-size:.85rem"></span></h3>
-      <table><thead><tr><th>Service</th><th>PID</th><th>Status</th><th>Heartbeat</th></tr></thead>
-      <tbody id="services-tbody"></tbody></table>
+
+    <!-- Services -->
+    <div class="card">
+      <h3>Services
+        <span x-show="staleCount > 0" style="color:var(--red);font-size:.85rem;font-weight:400"
+              x-text="`(${staleCount} stale)`"></span>
+      </h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Service</th><th>PID</th><th>Status</th><th>Heartbeat</th></tr></thead>
+          <tbody>
+            <template x-for="s in services" :key="s.id">
+              <tr>
+                <td><span class="dot" :class="s.status"></span><span x-text="s.name"></span></td>
+                <td style="font-variant-numeric:tabular-nums" x-text="s.pid || '--'"></td>
+                <td><span class="age-badge" :class="s.status" x-text="s.status === 'healthy' ? 'OK' : s.status === 'stale' ? 'Stale' : '--'"></span></td>
+                <td><span class="age-badge" :class="s.status" x-text="s.age_seconds != null ? fmtAge(s.age_seconds) : '--'"></span></td>
+              </tr>
+            </template>
+            <template x-if="services.length === 0">
+              <tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px">Loading services…</td></tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
     </div>
   </div>
 
-  <!-- Profiles -->
-  <div class="tab-panel" id="panel-profiles">
-    <div class="card" style="margin-bottom:12px">
+  <!-- ═══ Profiles ═══ -->
+  <div class="tab-panel" :class="activeTab==='profiles'?'active':''">
+    <div class="card" style="margin-bottom:14px">
       <h3>G2G Profiles</h3>
-      <div class="profile-grid" id="g2g-profiles"></div>
+      <div class="profile-grid">
+        <template x-for="p in g2gProfiles" :key="p.id">
+          <div class="profile-card active">
+            <div class="profile-name">
+              <span x-text="p.name"></span>
+              <span class="badge badge-ok">active</span>
+            </div>
+            <div style="color:var(--text-dim)" x-text="p.jwtStatus"></div>
+            <div style="margin-top:6px">
+              <button class="btn btn-sm" @click="relogin(p.id)">Relogin</button>
+            </div>
+          </div>
+        </template>
+      </div>
     </div>
     <div class="card">
       <h3>Eldorado Profiles</h3>
-      <div class="profile-grid" id="eldo-profiles"></div>
+      <div class="profile-grid">
+        <template x-for="p in eldoProfiles" :key="p.id">
+          <div class="profile-card" :class="{active: p.isActive}">
+            <div class="profile-name">
+              <span x-text="p.name"></span>
+              <template x-if="p.isActive"><span class="badge badge-ok">active</span></template>
+            </div>
+            <div style="color:var(--text-dim)" x-text="p.status"></div>
+          </div>
+        </template>
+      </div>
     </div>
   </div>
 
-  <!-- Orders -->
-  <div class="tab-panel" id="panel-orders">
+  <!-- ═══ Orders ═══ -->
+  <div class="tab-panel" :class="activeTab==='orders'?'active':''">
     <div class="card">
-      <table><thead><tr><th>Order</th><th>Platform</th><th>Item</th><th>Qty</th><th>Char</th><th>Status</th><th>Time</th></tr></thead>
-      <tbody id="orders-tbody"></tbody></table>
-      <div class="pagination" id="orders-pagination"></div>
+      <div class="table-wrap" style="max-height:600px;overflow-y:auto">
+        <table>
+          <thead><tr><th>Order</th><th>Platform</th><th>Item</th><th>Qty</th><th>Char</th><th>Status</th><th>Time</th></tr></thead>
+          <tbody>
+            <template x-for="o in orders" :key="o.order_id">
+              <tr>
+                <td style="font-family:monospace;font-size:.78rem" x-text="o.order_id || ''"></td>
+                <td x-text="o.platform || ''"></td>
+                <td x-text="o.item_name || ''"></td>
+                <td x-text="o.quantity || ''"></td>
+                <td x-text="o.character || ''"></td>
+                <td><span class="order-status" :class="o.status || 'DETECTED'" x-text="o.status || ''"></span></td>
+                <td style="color:var(--text-dim);font-size:.78rem" x-text="fmtVN(o.created_at)"></td>
+              </tr>
+            </template>
+            <template x-if="orders.length === 0">
+              <tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:24px">No orders</td></tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination">
+        <button class="btn btn-sm" :disabled="orderPage === 0" @click="orderPage--; fetchOrders()">Prev</button>
+        <span class="info" x-text="`${orderPage + 1}/${Math.max(1, Math.ceil(orderTotal / ORDER_PAGE))} (${orderTotal})`"></span>
+        <button class="btn btn-sm" :disabled="orderPage >= Math.ceil(orderTotal / ORDER_PAGE) - 1" @click="orderPage++; fetchOrders()">Next</button>
+      </div>
     </div>
   </div>
 
-  <!-- Logs -->
-  <div class="tab-panel" id="panel-logs">
+  <!-- ═══ Logs ═══ -->
+  <div class="tab-panel" :class="activeTab==='logs'?'active':''">
     <div class="log-container">
-      <div class="log-tabs" id="log-tabs"></div>
-      <div class="log-content" id="log-content"></div>
+      <div class="log-toolbar">
+        <template x-for="name in logNames" :key="name">
+          <div class="log-tab" :class="activeLog === name ? 'active' : ''" @click="switchLog(name)" x-text="name"></div>
+        </template>
+        <div class="log-toolbar-right">
+          <button class="log-filter" :class="logFilter === 'all' ? 'active' : ''" @click="logFilter='all'">ALL</button>
+          <button class="log-filter" :class="logFilter === 'info' ? 'active' : ''" @click="logFilter='info'">INFO</button>
+          <button class="log-filter" :class="logFilter === 'warn' ? 'active' : ''" @click="logFilter='warn'">WARN</button>
+          <button class="log-filter" :class="logFilter === 'error' ? 'active' : ''" @click="logFilter='error'">ERR</button>
+          <button class="btn btn-sm" @click="toggleAutoScroll()" :style="logAutoScroll ? 'color:var(--blue);border-color:var(--blue)' : ''">
+            ↓<span x-show="logAutoScroll">Auto</span>
+          </button>
+        </div>
+      </div>
+      <div class="log-content" x-ref="logContent" @scroll="onLogScroll()">
+        <template x-for="(line, idx) in filteredLogLines" :key="activeLog + '-' + idx">
+          <div class="log-line" :class="logLineClass(line)" x-html="colorize(line)"></div>
+        </template>
+        <template x-if="filteredLogLines.length === 0">
+          <div class="log-empty">No log lines</div>
+        </template>
+      </div>
+      <div class="log-stats">
+        <span x-text="`${filteredLogLines.length} lines`"></span>
+        <span style="margin-left:8px" x-text="logAutoScroll ? '↓ auto-scroll' : '↓ manual scroll'"></span>
+      </div>
     </div>
   </div>
 </div>
 
 <!-- OTP Modal -->
-<div id="otp-modal" class="modal-overlay">
+<div class="modal-overlay" :class="otpModalOpen ? 'active' : ''" @click.self="hideOTP()">
   <div class="modal">
-    <h2>G2G Login - Enter OTP</h2>
+    <h2>G2G Login — Enter OTP</h2>
     <p>Check your email for the verification code</p>
     <div class="otp-inputs">
-      <input type="text" maxlength="1" inputmode="numeric" data-idx="0">
-      <input type="text" maxlength="1" inputmode="numeric" data-idx="1">
-      <input type="text" maxlength="1" inputmode="numeric" data-idx="2">
-      <input type="text" maxlength="1" inputmode="numeric" data-idx="3">
-      <input type="text" maxlength="1" inputmode="numeric" data-idx="4">
-      <input type="text" maxlength="1" inputmode="numeric" data-idx="5">
+      <template x-for="(d, i) in 6" :key="i">
+        <input type="text" maxlength="1" inputmode="numeric"
+               :data-idx="i"
+               x-model="otpDigits[i]"
+               @input="otpInput($event, i)"
+               @keydown.backspace="otpBackspace($event, i)"
+               @paste="otpPaste($event)">
+      </template>
     </div>
-    <button class="btn btn-primary" onclick="submitOTP()" style="width:100%;padding:10px">Submit OTP</button>
-    <div id="otp-status" style="font-size:.78rem;color:var(--text-dim);margin-top:8px"></div>
+    <button class="btn btn-primary" @click="submitOTP()" style="width:100%;padding:12px">
+      <template x-if="otpSubmitting"><span class="spinner"></span></template>
+      Submit OTP
+    </button>
+    <div style="font-size:.8rem;color:var(--text-dim);margin-top:10px" x-text="otpStatus"></div>
   </div>
 </div>
 
 <script>
-const API='';
-let loginPoll=null, orderOffset=0, orderTotal=0;
-const ORDER_PAGE=10;
-let currentLog='auth', logAutoScroll=true;
-let evtSource=null;
-let otpModalOpen=false;
-let loginActive=false; // only true while user-initiated login is in progress
+function dashboard() {
+  return {
+    // ── Connection ──
+    connected: false,
+    clock: '',
 
-// ── Tabs ──
-document.querySelectorAll('.tab').forEach(t=>{
-  t.addEventListener('click',()=>{
-    document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(x=>x.classList.remove('active'));
-    t.classList.add('active');
-    document.getElementById('panel-'+t.dataset.tab).classList.add('active');
-    if(t.dataset.tab==='orders') fetchOrders(0);
-    if(t.dataset.tab==='logs') fetchLog(currentLog);
-    if(t.dataset.tab==='profiles') fetchProfileStatus();
-  });
-});
+    // ── Auth ──
+    auth: { g2g: {}, eldo: {} },
 
-// ── OTP ──
-document.querySelectorAll('.otp-inputs input').forEach((inp,i,all)=>{
-  inp.addEventListener('input',()=>{if(inp.value&&i<all.length-1)all[i+1].focus()});
-  inp.addEventListener('keydown',(e)=>{if(e.key==='Backspace'&&!inp.value&&i>0)all[i-1].focus()});
-  inp.addEventListener('paste',(e)=>{e.preventDefault();const t=(e.clipboardData||window.clipboardData).getData('text').replace(/\D/g,'');for(let j=0;j<Math.min(t.length,all.length);j++)all[j].value=t[j];all[Math.min(t.length,all.length)-1].focus()});
-});
-function getOTPCode(){return Array.from(document.querySelectorAll('.otp-inputs input')).map(i=>i.value).join('')}
-function clearOTP(){document.querySelectorAll('.otp-inputs input').forEach(i=>i.value='')}
-async function submitOTP(){
-  const code=getOTPCode();if(code.length<4){document.getElementById('otp-status').textContent='Enter at least 4 digits';return}
-  document.getElementById('otp-status').innerHTML='<span class="spinner"></span>Submitting...';
-  try{const r=await fetch(API+'/api/otp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({otp:code})});const d=await r.json();document.getElementById('otp-status').textContent=r.ok?'OTP submitted!':(d.error||'Failed')}catch(e){document.getElementById('otp-status').textContent='Error: '+e.message}
+    // ── Services ──
+    services: [],
+    staleCount: 0,
+
+    // ── Orders ──
+    orders: [],
+    orderTotal: 0,
+    orderPage: 0,
+    ORDER_PAGE: 50,
+
+    // ── Logs ──
+    logBuffers: {},         // { auth: [...], g2g_worker: [...], ... }
+    activeLog: 'auth',
+    logFilter: 'all',
+    logAutoScroll: true,
+
+    // ── Login ──
+    loginActive: false,
+    loginBarClass: '',
+    loginBarText: '',
+
+    // ── OTP ──
+    otpModalOpen: false,
+    otpDigits: ['', '', '', '', '', ''],
+    otpSubmitting: false,
+    otpStatus: '',
+
+    // ── Profiles ──
+    profileData: {},
+
+    // ── Tab ──
+    activeTab: 'overview',
+
+    // ── SSE ──
+    evtSource: null,
+
+    // ── Computed ──
+    get logNames() { return Object.keys(this.logBuffers).length ? Object.keys(this.logBuffers) : ['auth', 'g2g_worker', 'eldo_worker', 'coordinator', 'g2g_scanner', 'eldo_scanner', 'watchdog', 'dashboard'] },
+    get filteredLogLines() {
+      const lines = this.logBuffers[this.activeLog] || [];
+      if (this.logFilter === 'all') return lines;
+      // Map filter keys to actual log level strings used in logging output
+      const levelMap = { info: ' INFO ', warn: ' WARNING ', error: ' ERROR ', debug: ' DEBUG ' };
+      const needle = levelMap[this.logFilter] || (' ' + this.logFilter.toUpperCase() + ' ');
+      return lines.filter(l => l.includes(needle));
+    },
+    get g2gBadge() {
+      const g = this.auth.g2g || {};
+      if (g.fresh) return { text: 'Fresh', cls: 'badge-ok' };
+      if (g.has_jwt) return { text: 'Stale', cls: 'badge-warn' };
+      return { text: 'No JWT', cls: 'badge-err' };
+    },
+    get eldoBadge() {
+      const el = this.auth.eldo || {};
+      if (el.fresh) return { text: 'Fresh', cls: 'badge-ok' };
+      if (el.has_cookies) return { text: 'Stale', cls: 'badge-warn' };
+      return { text: 'None', cls: 'badge-err' };
+    },
+    get jwtProgress() {
+      const exp = this.auth.g2g?.jwt_expires_in || 0;
+      if (exp <= 0) return 0;
+      // JWT lives 15 min = 900s; show remaining as percentage
+      return Math.min(100, Math.max(0, (exp / 900) * 100));
+    },
+    get jwtProgressCls() {
+      if (this.jwtProgress > 40) return 'green';
+      if (this.jwtProgress > 15) return 'yellow';
+      return 'red';
+    },
+    get g2gProfiles() {
+      const g = this.auth.g2g || {};
+      return [{
+        id: 'chrome_profile_g2g',
+        name: 'g2g',
+        jwtStatus: g.has_jwt ? 'JWT OK' : 'No JWT',
+      }];
+    },
+    get eldoProfiles() {
+      const el = this.auth.eldo || {};
+      const activeProfile = el.active_profile || '';
+      const profiles = this.profileData.profiles || {};
+      const ids = ['chrome_profile_eldo', 'chrome_profile_eldo_bak1', 'chrome_profile_eldo_bak2'];
+      return ids.map(id => {
+        const s = profiles[id] || {};
+        const isActive = id === activeProfile;
+        const status = isActive
+          ? (el.logged_in ? 'Logged in' : 'Not logged in')
+          : (s.alive === true ? 'Session OK' : s.alive === false ? 'Session expired' : (s.detail || 'not checked yet'));
+        return { id, name: id.replace('chrome_profile_', ''), isActive, status };
+      });
+    },
+
+    // ── Init ──
+    init() {
+      this.updateClock();
+      setInterval(() => this.updateClock(), 1000);
+      this.connectSSE();
+    },
+
+    // ── SSE ──
+    connectSSE() {
+      if (this.evtSource) { try { this.evtSource.close(); } catch(e){} }
+      try {
+        this.evtSource = new EventSource('/api/events');
+
+        this.evtSource.addEventListener('status', (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            const map = {};
+            (data.services || []).forEach(s => map[s.service_name] = s);
+            this.services = this._buildSortedServices(map);
+            this.staleCount = data.stale_count || 0;
+          } catch(ex) {}
+        });
+
+        this.evtSource.addEventListener('auth', (e) => {
+          try { this.auth = JSON.parse(e.data); } catch(ex) {}
+        });
+
+        this.evtSource.addEventListener('orders', (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            // Only update the displayed order list if user is on page 0.
+            // When paginated (orderPage > 0), just update total —
+            // user's current page data comes from fetchOrders() REST call.
+            this.orderTotal = data.total || 0;
+            if (this.orderPage === 0) {
+              this.orders = data.orders || [];
+            }
+          } catch(ex) {}
+        });
+
+        this.evtSource.addEventListener('log_update', (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            const name = data.name;
+            if (data.reset) {
+              // Full replacement (initial burst)
+              this.logBuffers[name] = data.lines || [];
+            } else {
+              // Incremental append
+              if (!this.logBuffers[name]) this.logBuffers[name] = [];
+              this.logBuffers[name].push(...(data.lines || []));
+              // Trim buffer
+              if (this.logBuffers[name].length > 2000) {
+                this.logBuffers[name] = this.logBuffers[name].slice(-2000);
+              }
+            }
+            // Auto-scroll if viewing this log
+            if (name === this.activeLog && this.logAutoScroll) {
+              this.$nextTick(() => this.scrollLogBottom());
+            }
+          } catch(ex) {}
+        });
+
+        this.evtSource.addEventListener('login', (e) => {
+          try { this._handleLoginEvent(JSON.parse(e.data)); } catch(ex) {}
+        });
+
+        this.evtSource.onopen = () => { this.connected = true; };
+        this.evtSource.onerror = () => {
+          this.connected = false;
+          this.evtSource.close();
+          this.evtSource = null;
+          setTimeout(() => this.connectSSE(), 3000);
+        };
+
+        this.connected = true;
+      } catch(e) {
+        this.connected = false;
+        setTimeout(() => this.connectSSE(), 3000);
+      }
+    },
+
+    _buildSortedServices(map) {
+      const defs = [
+        {id:'auth_service',name:'Auth Service',tier:0},
+        {id:'worker_eldo',name:'Eldo Worker',tier:1},
+        {id:'worker_g2g',name:'G2G Worker',tier:1},
+        {id:'coordinator',name:'Coordinator',tier:2},
+        {id:'scanner_eldorado',name:'Eldo Scanner',tier:3},
+        {id:'scanner_g2g',name:'G2G Scanner',tier:3},
+        {id:'dashboard',name:'Dashboard',tier:3},
+      ];
+      defs.sort((a,b) => a.tier - b.tier || a.name.localeCompare(b.name));
+      return defs.map(d => {
+        const s = map[d.id] || {};
+        return {
+          id: d.id, name: d.name, tier: d.tier,
+          pid: s.pid || null,
+          last_beat: s.last_beat || null,
+          status: s.status || 'unknown',
+          age_seconds: s.age_seconds != null ? s.age_seconds : null,
+        };
+      });
+    },
+
+    // ── Tab switching ──
+    switchTab(tab) {
+      this.activeTab = tab;
+      if (tab === 'profiles') this.fetchProfileStatus();
+    },
+
+    // ── Log switching ──
+    switchLog(name) {
+      this.activeLog = name;
+      if (this.logAutoScroll) {
+        this.$nextTick(() => this.scrollLogBottom());
+      }
+    },
+
+    toggleAutoScroll() {
+      this.logAutoScroll = !this.logAutoScroll;
+      if (this.logAutoScroll) this.$nextTick(() => this.scrollLogBottom());
+    },
+
+    scrollLogBottom() {
+      const el = this.$refs.logContent;
+      if (el) el.scrollTop = el.scrollHeight;
+    },
+
+    onLogScroll() {
+      const el = this.$refs.logContent;
+      if (!el) return;
+      // If user scrolled up (not at bottom), disable auto-scroll
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      if (!atBottom && this.logAutoScroll) {
+        this.logAutoScroll = false;
+      }
+    },
+
+    logLineClass(line) {
+      if (line.includes(' ERROR ')) return 'err';
+      if (line.includes(' WARNING ')) return 'warn';
+      if (line.includes(' INFO ')) return 'info';
+      if (line.includes(' DEBUG ')) return 'debug';
+      return '';
+    },
+
+    colorize(line) {
+      let cls = '';
+      if (line.includes(' ERROR ')) cls = 'err';
+      else if (line.includes(' WARNING ')) cls = 'warn';
+      else if (line.includes(' INFO ')) cls = 'info';
+
+      const tsMatch = line.match(/^(\[[\d:]+\])/);
+      const ts = tsMatch ? `<span class="ts">${esc(tsMatch[1])}</span>` : '';
+      const rest = tsMatch ? esc(line.substring(tsMatch[0].length)) : esc(line);
+      return ts + rest;
+    },
+
+    // ── API calls ──
+    async fetchOrders() {
+      try {
+        const offset = this.orderPage * this.ORDER_PAGE;
+        const r = await fetch(`/api/orders?offset=${offset}&limit=${this.ORDER_PAGE}`);
+        const d = await r.json();
+        this.orders = d.orders || [];
+        this.orderTotal = d.total || 0;
+      } catch(e) {}
+    },
+
+    async fetchProfileStatus() {
+      try {
+        const r = await fetch('/api/profile-status');
+        this.profileData = await r.json();
+      } catch(e) {}
+    },
+
+    // ── Login flow ──
+    async triggerAutoLogin() {
+      this.loginActive = true;
+      this.loginBarClass = 'logging_in show';
+      this.loginBarText = 'Starting auto-login...';
+      try {
+        const r = await fetch('/api/auth/g2g/auto-login', { method: 'POST' });
+        if (!r.ok) {
+          this.loginBarClass = 'failed show';
+          this.loginBarText = 'Auto-login request failed';
+          setTimeout(() => { this.loginBarClass = ''; this.loginActive = false; }, 5000);
+          return;
+        }
+        this._startLoginPoll();
+      } catch(e) {
+        this.loginBarClass = 'failed show';
+        this.loginBarText = 'Connection error';
+        setTimeout(() => { this.loginBarClass = ''; this.loginActive = false; }, 5000);
+      }
+    },
+
+    async relogin(profile) {
+      this.loginActive = true;
+      this.loginBarClass = 'logging_in show';
+      this.loginBarText = 'Starting relogin...';
+      try {
+        const r = await fetch(`/api/auth/g2g/relogin/${profile}`, { method: 'POST' });
+        if (!r.ok) {
+          this.loginBarClass = 'failed show';
+          this.loginBarText = 'Relogin failed — try another profile';
+          setTimeout(() => { this.loginBarClass = ''; this.loginActive = false; }, 5000);
+          return;
+        }
+        this._startLoginPoll();
+      } catch(e) {
+        this.loginBarClass = 'failed show';
+        this.loginBarText = 'Connection error';
+        setTimeout(() => { this.loginBarClass = ''; this.loginActive = false; }, 5000);
+      }
+    },
+
+    _startLoginPoll() {
+      // Poll login status every 2s while login is active
+      const poll = async () => {
+        if (!this.loginActive) return;
+        try {
+          const r = await fetch('/api/login-status');
+          const d = await r.json();
+          this._handleLoginEvent(d);
+          if (this.loginActive) setTimeout(poll, 2000);
+        } catch(e) {
+          if (this.loginActive) setTimeout(poll, 2000);
+        }
+      };
+      setTimeout(poll, 500);
+    },
+
+    _handleLoginEvent(d) {
+      if (d.status === 'need_otp') {
+        this.loginBarClass = 'need_otp show';
+        this.loginBarText = 'G2G requires OTP — enter code below';
+        this.showOTP();
+      } else if (d.status === 'logging_in') {
+        this.loginBarClass = 'logging_in show';
+        this.loginBarText = d.message || 'Logging in...';
+      } else if (d.status === 'success') {
+        this.loginBarClass = 'success show';
+        this.loginBarText = d.message || 'Login OK';
+        this.hideOTP();
+        this.loginActive = false;
+        setTimeout(() => { this.loginBarClass = ''; }, 5000);
+      } else if (d.status === 'failed') {
+        this.loginBarClass = 'failed show';
+        this.loginBarText = d.message || 'Login failed';
+        this.hideOTP();
+        this.loginActive = false;
+        setTimeout(() => { this.loginBarClass = ''; }, 10000);
+      } else {
+        this.loginBarClass = '';
+        this.loginActive = false;
+      }
+    },
+
+    // ── OTP ──
+    showOTP() {
+      if (this.otpModalOpen) return;
+      this.otpModalOpen = true;
+      this.otpDigits = ['', '', '', '', '', ''];
+      this.otpStatus = '';
+      this.$nextTick(() => {
+        const first = document.querySelector('.otp-inputs input');
+        if (first) first.focus();
+      });
+    },
+    hideOTP() { this.otpModalOpen = false; },
+
+    otpInput(e, i) {
+      const val = e.target.value.replace(/\D/g, '');
+      e.target.value = val;
+      this.otpDigits[i] = val;
+      if (val && i < 5) {
+        const inputs = document.querySelectorAll('.otp-inputs input');
+        if (inputs[i + 1]) inputs[i + 1].focus();
+      }
+    },
+    otpBackspace(e, i) {
+      if (!e.target.value && i > 0) {
+        const inputs = document.querySelectorAll('.otp-inputs input');
+        if (inputs[i - 1]) { inputs[i - 1].focus(); inputs[i - 1].value = ''; }
+        this.otpDigits[i - 1] = '';
+      }
+    },
+    otpPaste(e) {
+      e.preventDefault();
+      const text = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
+      const inputs = document.querySelectorAll('.otp-inputs input');
+      for (let j = 0; j < Math.min(text.length, 6); j++) {
+        inputs[j].value = text[j];
+        this.otpDigits[j] = text[j];
+      }
+      const focus = Math.min(text.length, 5);
+      if (inputs[focus]) inputs[focus].focus();
+    },
+
+    async submitOTP() {
+      const code = this.otpDigits.join('');
+      if (code.length < 4) { this.otpStatus = 'Enter at least 4 digits'; return; }
+      this.otpSubmitting = true;
+      this.otpStatus = 'Submitting...';
+      try {
+        const r = await fetch('/api/otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ otp: code }),
+        });
+        const d = await r.json();
+        this.otpStatus = r.ok ? 'OTP submitted!' : (d.error || 'Failed');
+      } catch(e) {
+        this.otpStatus = 'Error: ' + e.message;
+      }
+      this.otpSubmitting = false;
+    },
+
+    // ── Helpers ──
+    updateClock() {
+      this.clock = new Date().toLocaleTimeString('vi-VN', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        timeZone: 'Asia/Ho_Chi_Minh',
+      });
+    },
+    fmtAge(s) {
+      if (s == null) return '--';
+      if (s < 60) return s + 's';
+      if (s < 3600) return Math.floor(s/60) + 'm ' + (s%60) + 's';
+      return Math.floor(s/3600) + 'h ' + Math.floor((s%3600)/60) + 'm';
+    },
+    fmtDur(s) {
+      if (s == null) return '--';
+      if (s <= 0) return 'Expired';
+      return Math.floor(s/60) + 'm ' + (s%60) + 's';
+    },
+    fmtVN(iso) {
+      if (!iso) return '--';
+      try {
+        const d = new Date(iso + (iso.includes('Z') || iso.includes('+') ? '' : 'Z'));
+        return d.toLocaleString('vi-VN', {
+          timeZone: 'Asia/Ho_Chi_Minh', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit',
+        });
+      } catch(e) { return iso.replace('T', ' ').substring(5, 16); }
+    },
+  };
 }
-function showOTP(){
-  if(otpModalOpen) return; // already open — don't clear user's input
-  otpModalOpen=true;
-  clearOTP();
-  document.getElementById('otp-status').textContent='';
-  document.getElementById('otp-modal').classList.add('active');
-  document.querySelector('.otp-inputs input').focus();
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
 }
-function hideOTP(){otpModalOpen=false;document.getElementById('otp-modal').classList.remove('active')}
-
-// ── SSE realtime ──
-function connectSSE(){
-  if(evtSource){evtSource.close()}
-  try{
-    evtSource=new EventSource(API+'/api/events');
-    evtSource.addEventListener('status',e=>{
-      try{
-        const data=JSON.parse(e.data);
-        const map={};data.services.forEach(s=>map[s.service_name]=s);
-        updateServiceRows(map);
-      }catch(ex){}
-    });
-    evtSource.onerror=()=>{evtSource.close();evtSource=null;setTimeout(connectSSE,5000)};
-  }catch(e){}
-}
-
-// ── API calls ──
-async function fetchAuthStatus(){
-  try{
-    const r=await fetch(API+'/api/auth-status');const d=await r.json();if(d.error)return;
-    const g=d.g2g||{},el=d.eldo||{};
-    const gb=document.getElementById('g2g-badge');gb.textContent=g.fresh?'Fresh':(g.has_jwt?'Stale':'No JWT');gb.className='badge '+(g.fresh?'badge-ok':g.has_jwt?'badge-warn':'badge-err');
-    document.getElementById('g2g-jwt').textContent=g.has_jwt?'Yes':'None';
-    document.getElementById('g2g-exp').textContent=(g.jwt_expires_in||0)>0?fmtDur(g.jwt_expires_in):'--';
-    document.getElementById('g2g-profile').textContent=(g.active_profile||'--').replace('chrome_profile_','');
-    const eb=document.getElementById('eldo-badge');eb.textContent=el.fresh?'Fresh':(el.has_cookies?'Stale':'None');eb.className='badge '+(el.fresh?'badge-ok':el.has_cookies?'badge-warn':'badge-err');
-    document.getElementById('eldo-cookies').textContent=el.cookies?'Yes ('+el.cookies+')':'No';
-    document.getElementById('eldo-logged').textContent=el.logged_in?'Yes':'No';
-    document.getElementById('eldo-profile').textContent=(el.active_profile||'--').replace('chrome_profile_','');
-  }catch(e){}
-}
-
-async function fetchLoginStatus(){
-  // Only poll when user initiated a login — never on page load
-  if(!loginActive) return;
-  try{
-    const r=await fetch(API+'/api/login-status');const d=await r.json();const b=document.getElementById('login-bar');
-    if(d.status==='need_otp'){
-      b.className='login-bar need_otp';b.innerHTML='<span class="spinner"></span>G2G requires OTP — enter code below';
-      showOTP();
-    }
-    else if(d.status==='logging_in'){b.className='login-bar logging_in';b.innerHTML='<span class="spinner"></span>'+(d.message||'Logging in...')}
-    else if(d.status==='success'){
-      b.className='login-bar success';b.textContent=d.message||'Login OK';
-      hideOTP();stopLoginPoll();
-      setTimeout(()=>{b.className='login-bar';loginActive=false},5000);
-      fetchAuthStatus();fetchProfileStatus(); // refresh both immediately
-    }
-    else if(d.status==='failed'){
-      b.className='login-bar failed';b.textContent=d.message||'Login failed';
-      hideOTP();stopLoginPoll();
-      setTimeout(()=>{b.className='login-bar';loginActive=false},10000);
-    }
-    else{b.className='login-bar';stopLoginPoll();loginActive=false}
-  }catch(e){}
-}
-
-async function fetchProfileStatus(){
-  try{
-    // Get active profiles from /health (always up-to-date)
-    const hr=await fetch(API+'/api/auth-status');const hd=await hr.json();
-    const activeG2G=(hd.g2g||{}).active_profile||'';
-    const activeEldo=(hd.eldo||{}).active_profile||'';
-    const g2gHasJwt=(hd.g2g||{}).has_jwt;
-    const eldoLoggedIn=(hd.eldo||{}).logged_in;
-
-    // Get profile check data (updated every 15min)
-    const r=await fetch(API+'/api/profile-status');const d=await r.json();
-    const profiles=d.profiles||{};
-
-    let g2gHTML='',eldoHTML='';
-    const g2gProfiles=['chrome_profile_g2g'];
-    const eldoProfiles=['chrome_profile_eldo','chrome_profile_eldo_bak1','chrome_profile_eldo_bak2'];
-
-    g2gProfiles.forEach(p=>{
-      const s=profiles[p]||{};
-      const name=p.replace('chrome_profile_','');
-      const status=g2gHasJwt?'JWT OK':'No JWT';
-      g2gHTML+=`<div class="profile-card active"><div class="profile-name"><span>${esc(name)}</span><span class="badge badge-ok">active</span></div><div style="color:var(--text-dim)">${status}</div><div style="margin-top:4px"><button class="btn btn-sm" onclick="relogin('${p}')">Relogin</button></div></div>`;
-    });
-    eldoProfiles.forEach(p=>{
-      const s=profiles[p]||{};
-      const name=p.replace('chrome_profile_','');
-      const isActive=p===activeEldo;
-      const cls=isActive?'active':'';
-      const status=isActive?(eldoLoggedIn?'Logged in':'Not logged in'):(s.alive===true?'Session OK':s.alive===false?'Session expired':(s.detail||'not checked yet'));
-      eldoHTML+=`<div class="profile-card ${cls}"><div class="profile-name"><span>${esc(name)}</span>${isActive?'<span class="badge badge-ok">active</span>':''}</div><div style="color:var(--text-dim)">${status}</div></div>`;
-    });
-    document.getElementById('g2g-profiles').innerHTML=g2gHTML;
-    document.getElementById('eldo-profiles').innerHTML=eldoHTML;
-  }catch(e){}
-}
-
-async function fetchOrders(offset){
-  orderOffset=offset||0;
-  try{
-    const r=await fetch(API+`/api/orders?offset=${orderOffset}&limit=${ORDER_PAGE}`);const d=await r.json();
-    orderTotal=d.total||0;const tbody=document.getElementById('orders-tbody');
-    if(!d.orders||!d.orders.length){tbody.innerHTML='<tr><td colspan="7" style="text-align:center;color:var(--text-dim)">No orders</td></tr>';renderPagination();return}
-    tbody.innerHTML=d.orders.map(o=>{
-      const sc='order-status '+(o.status||'DETECTED');const t=o.created_at?fmtVN(o.created_at):'--';
-      return `<tr><td style="font-family:monospace;font-size:.78rem">${esc(o.order_id||'')}</td><td>${esc(o.platform||'')}</td><td>${esc(o.item_name||'')}</td><td>${esc(o.quantity||'')}</td><td>${esc(o.character||'')}</td><td><span class="${sc}">${o.status||''}</span></td><td style="color:var(--text-dim);font-size:.78rem">${t}</td></tr>`;
-    }).join('');
-    renderPagination();
-  }catch(e){}
-}
-
-function renderPagination(){
-  const el=document.getElementById('orders-pagination');
-  const pages=Math.ceil(orderTotal/ORDER_PAGE);const cur=Math.floor(orderOffset/ORDER_PAGE);
-  if(pages<=1){el.innerHTML=`<span class="info">${orderTotal} orders</span>`;return}
-  let html=`<button class="btn btn-sm" ${cur===0?'disabled':''} onclick="fetchOrders(${(cur-1)*ORDER_PAGE})">Prev</button>`;
-  html+=`<span class="info">${cur+1}/${pages} (${orderTotal})</span>`;
-  html+=`<button class="btn btn-sm" ${cur>=pages-1?'disabled':''} onclick="fetchOrders(${(cur+1)*ORDER_PAGE})">Next</button>`;
-  el.innerHTML=html;
-}
-
-async function fetchLog(name){
-  currentLog=name;
-  document.querySelectorAll('.log-tab').forEach(t=>t.classList.toggle('active',t.dataset.log===name));
-  try{
-    const r=await fetch(API+`/api/log/${name}?n=200`);const d=await r.json();
-    const el=document.getElementById('log-content');
-    el.innerHTML=(d.lines||[]).map(l=>colorize(l)).join('\n');
-    el.scrollTop=el.scrollHeight;
-  }catch(e){}
-}
-
-async function fetchAllLogTabs(){
-  const r=await fetch(API+'/api/logs?n=1');const d=await r.json();
-  const tabs=document.getElementById('log-tabs');
-  tabs.innerHTML=Object.keys(d).map(n=>`<div class="log-tab ${n===currentLog?'active':''}" data-log="${n}">${n}</div>`).join('');
-  tabs.querySelectorAll('.log-tab').forEach(t=>t.addEventListener('click',()=>fetchLog(t.dataset.log)));
-}
-
-async function triggerAutoLogin(){
-  loginActive=true;startLoginPoll();
-  try{
-    const r=await fetch(API+'/api/auth/g2g/auto-login',{method:'POST'});
-    if(!r.ok){const b=document.getElementById('login-bar');b.className='login-bar failed';b.textContent='Auto-login request failed';setTimeout(()=>{b.className='login-bar';loginActive=false;stopLoginPoll()},5000);return}
-    fetchLoginStatus();
-  }catch(e){const b=document.getElementById('login-bar');b.className='login-bar failed';b.textContent='Connection error';setTimeout(()=>{b.className='login-bar';loginActive=false;stopLoginPoll()},5000)}
-}
-
-async function relogin(profile){
-  loginActive=true;startLoginPoll();
-  try{
-    const r=await fetch(API+`/api/auth/g2g/relogin/${profile}`,{method:'POST'});
-    if(!r.ok){const b=document.getElementById('login-bar');b.className='login-bar failed';b.textContent='Relogin failed — try another profile';setTimeout(()=>{b.className='login-bar';loginActive=false;stopLoginPoll()},5000);return}
-    fetchLoginStatus();
-  }catch(e){const b=document.getElementById('login-bar');b.className='login-bar failed';b.textContent='Connection error';setTimeout(()=>{b.className='login-bar';loginActive=false;stopLoginPoll()},5000)}
-}
-
-function startLoginPoll(){if(loginPoll)return;loginPoll=setInterval(fetchLoginStatus,2000)}
-function stopLoginPoll(){if(loginPoll){clearInterval(loginPoll);loginPoll=null}}
-
-// ── SSE-driven service update ──
-function updateServiceRows(map){
-  const services=[
-    {id:'auth_service',name:'Auth Service',tier:0},
-    {id:'worker_eldo',name:'Eldo Worker',tier:1},
-    {id:'worker_g2g',name:'G2G Worker',tier:1},
-    {id:'coordinator',name:'Coordinator',tier:2},
-    {id:'scanner_eldorado',name:'Eldo Scanner',tier:3},
-    {id:'scanner_g2g',name:'G2G Scanner',tier:3},
-    {id:'dashboard',name:'Dashboard',tier:3},
-  ];
-  services.sort((a,b)=>a.tier-b.tier||a.name.localeCompare(b.name));
-  const tbody=document.getElementById('services-tbody');
-  let stale=0;
-  tbody.innerHTML=services.map(s=>{
-    const d=map[s.id]||{};const st=d.status||'unknown';const age=d.age_seconds;
-    const cls=st;const lbl=st==='healthy'?'OK':st==='stale'?'Stale':'--';
-    const ageCls=st==='healthy'?'':st==='stale'?'stale':'unknown';
-    if(st==='stale')stale++;
-    return `<tr><td><span class="dot ${cls}"></span>${s.name}</td><td>${d.pid||'--'}</td><td><span class="age-badge ${ageCls}">${lbl}</span></td><td><span class="age-badge ${ageCls}">${age!=null?fmtAge(age):'--'}</span></td></tr>`;
-  }).join('');
-  document.getElementById('stale-count').textContent=stale>0?`(${stale} stale)`:'';
-}
-
-// ── Helpers ──
-function fmtAge(s){if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m '+(s%60)+'s';return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m'}
-function fmtDur(s){if(s<=0)return'Expired';return Math.floor(s/60)+'m '+(s%60)+'s'}
-function fmtVN(iso){try{const d=new Date(iso+(iso.includes('Z')||iso.includes('+')?'':'Z'));return d.toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}catch(e){return iso.replace('T',' ').substring(5,16)}}
-function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
-function colorize(line){
-  let cls='';if(line.includes(' ERROR '))cls='err';else if(line.includes(' WARNING '))cls='warn';else if(line.includes(' INFO '))cls='info';
-  const tsMatch=line.match(/^(\[[\d:]+\])/);const ts=tsMatch?`<span class="ts">${tsMatch[1]}</span>`:'';
-  const rest=tsMatch?line.substring(tsMatch[0].length):line;
-  return `<div class="log-line ${cls}">${ts}${esc(rest)}</div>`;
-}
-
-// ── Clock ──
-function updateClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',second:'2-digit',timeZone:'Asia/Ho_Chi_Minh'})}
-
-// ── Auto-refresh logs ──
-let logRefreshId=null;
-function startLogRefresh(){if(logRefreshId)return;logRefreshId=setInterval(()=>{if(document.getElementById('panel-logs').classList.contains('active'))fetchLog(currentLog)},5000)}
-function stopLogRefresh(){if(logRefreshId){clearInterval(logRefreshId);logRefreshId=null}}
-
-// ── Init ──
-fetchAuthStatus();fetchAllLogTabs();fetchOrders(0);fetchProfileStatus();
-connectSSE();
-setInterval(fetchAuthStatus,8000);       // auth card updates every 8s
-setInterval(()=>{if(document.getElementById('panel-profiles').classList.contains('active'))fetchProfileStatus()},10000);
-setInterval(updateClock,1000);
-startLogRefresh();
-updateClock();
 </script>
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js"></script>
 </body>
 </html>

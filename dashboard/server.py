@@ -4,6 +4,13 @@ Usage:
     python -m dashboard.server
 
 Runs on port 8766 (configurable via DASHBOARD_PORT env).
+
+SSE events pushed to all connected clients:
+    status     — service heartbeat (every 5s)
+    auth       — G2G JWT + Eldo cookies freshness (every 3s)
+    orders     — recent orders with change detection (every 2s)
+    log_update — incremental new log lines per file (every 1s)
+    login      — login flow status when active (every 2s)
 """
 
 import asyncio
@@ -12,6 +19,7 @@ import os
 import signal
 import time
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from aiohttp import web, ClientSession, ClientTimeout
@@ -47,17 +55,24 @@ LOG_FILES = {
 }
 
 STALE_THRESHOLD = 90
+LOG_BUFFER_MAX = 2000  # max lines kept per log buffer in SSE broadcast
+
 _shutdown = asyncio.Event()
 db: Database = None
 http: ClientSession = None
 _sse_clients: list = []
+
+# ── Incremental log tracking ──
+_log_positions: dict[str, int] = {}   # name → byte offset
+_log_buffer: dict[str, list] = {}     # name → recent lines (ring buffer)
 
 
 # ── Helpers ──
 
 async def proxy_get(path: str):
     try:
-        async with http.get(f"{AUTH_SERVICE_URL}{path}", timeout=ClientTimeout(total=10)) as resp:
+        async with http.get(f"{AUTH_SERVICE_URL}{path}",
+                            timeout=ClientTimeout(total=10)) as resp:
             return await resp.json()
     except Exception as e:
         return {"error": str(e)}
@@ -81,27 +96,48 @@ def _tail_file(path: str, n: int = 100) -> list:
         return []
 
 
+def _read_new_lines(name: str) -> list[str]:
+    """Read new lines from a log file since last check (incremental).
+
+    Handles log rotation: if file size < saved offset, resets to 0.
+    Returns list of new lines (stripped of trailing newline).
+    """
+    path = LOG_FILES.get(name)
+    if not path:
+        return []
+    try:
+        pos = _log_positions.get(name, 0)
+        with open(path, "r", errors="replace") as f:
+            f.seek(0, 2)  # end of file
+            size = f.tell()
+            if size < pos:
+                # File was rotated / truncated — start from beginning
+                pos = 0
+            f.seek(pos)
+            new_lines = f.readlines()
+            _log_positions[name] = f.tell()
+        return [l.rstrip() for l in new_lines]
+    except Exception:
+        return []
+
+
 async def _broadcast_sse(event: str, data: dict):
+    """Send an SSE event to all connected clients. Clean up dead ones."""
+    if not _sse_clients:
+        return
+    payload = json.dumps(data)
     dead = []
     for i, resp in enumerate(_sse_clients):
         try:
-            await resp.send(json.dumps(data), event=event)
+            await resp.send(payload, event=event)
         except Exception:
             dead.append(i)
     for i in reversed(dead):
         _sse_clients.pop(i)
 
 
-# ── Handlers ──
-
-async def handle_index(request: web.Request):
-    html_path = TEMPLATE_DIR / "index.html"
-    if not html_path.exists():
-        return web.Response(text="Dashboard template not found", status=500)
-    return web.Response(text=html_path.read_text(encoding="utf-8"), content_type="text/html")
-
-
-async def handle_status(request: web.Request):
+def _build_service_status() -> dict:
+    """Read heartbeat table and return {services: [...], stale_count: N}."""
     with db._get_conn() as conn:
         rows = conn.execute(
             "SELECT service_name, last_beat, pid FROM heartbeat"
@@ -128,7 +164,6 @@ async def handle_status(request: web.Request):
             entry["pid"] = hb["pid"]
             entry["last_beat"] = beat_str
             try:
-                from datetime import datetime
                 beat_dt = datetime.fromisoformat(beat_str)
                 age = now - beat_dt.timestamp()
                 entry["age_seconds"] = int(age)
@@ -140,7 +175,23 @@ async def handle_status(request: web.Request):
         services.append(entry)
 
     services.sort(key=lambda s: (s["tier"], s["name"]))
-    return web.json_response({"services": services, "stale_count": stale_count})
+    return {"services": services, "stale_count": stale_count}
+
+
+# ── Handlers ──
+
+async def handle_index(request: web.Request):
+    html_path = TEMPLATE_DIR / "index.html"
+    if not html_path.exists():
+        return web.Response(text="Dashboard template not found", status=500)
+    return web.Response(
+        text=html_path.read_text(encoding="utf-8"),
+        content_type="text/html",
+    )
+
+
+async def handle_status(request: web.Request):
+    return web.json_response(_build_service_status())
 
 
 async def handle_auth_status(request: web.Request):
@@ -202,7 +253,11 @@ async def handle_log(request: web.Request):
     n = int(request.query.get("n", "100"))
     path = LOG_FILES.get(name)
     if not path:
-        return web.json_response({"error": f"Unknown log: {name}", "available": list(LOG_FILES.keys())}, status=404)
+        return web.json_response(
+            {"error": f"Unknown log: {name}",
+             "available": list(LOG_FILES.keys())},
+            status=404,
+        )
     return web.json_response({"name": name, "lines": _tail_file(path, n)})
 
 
@@ -215,8 +270,47 @@ async def handle_logs_all(request: web.Request):
 
 
 async def handle_sse(request: web.Request):
+    """SSE endpoint. Sends initial data burst, then keeps connection alive."""
     resp = await sse_response(request)
+
+    # ── Initial data burst (before adding to broadcast list to avoid race) ──
+    try:
+        # Service status
+        status_data = _build_service_status()
+        await resp.send(json.dumps(status_data), event="status")
+
+        # Auth status
+        auth_data = await proxy_get("/health")
+        if not auth_data.get("error"):
+            await resp.send(json.dumps(auth_data), event="auth")
+
+        # Current orders (first page)
+        with db._get_conn() as conn:
+            rows = conn.execute(
+                """SELECT order_id, platform, status, item_name, quantity,
+                          character, customer_name, created_at, updated_at
+                   FROM orders ORDER BY created_at DESC LIMIT 50""",
+            ).fetchall()
+            total = conn.execute("SELECT count(*) FROM orders").fetchone()[0]
+        await resp.send(json.dumps({
+            "orders": [dict(r) for r in rows],
+            "total": total,
+        }), event="orders")
+
+        # Initial log buffers (last 100 lines per file)
+        for log_name, log_path in LOG_FILES.items():
+            lines = _tail_file(log_path, 100)
+            _log_buffer[log_name] = lines
+            await resp.send(json.dumps({
+                "name": log_name, "lines": lines, "reset": True,
+            }), event="log_update")
+
+    except Exception:
+        pass  # Client might have disconnected during burst
+
+    # Add to broadcast list AFTER burst so broadcaster doesn't interleave
     _sse_clients.append(resp)
+
     try:
         await resp.wait()
     finally:
@@ -228,28 +322,114 @@ async def handle_sse(request: web.Request):
 # ── SSE broadcaster task ──
 
 async def _sse_broadcaster():
-    while not _shutdown.is_set():
-        # Broadcast service status every 5s
+    """Combined SSE broadcaster — all event types on different sub-intervals.
+
+    Tick cycle: 1s
+      tick % 1 == 0:  incremental log tail  → log_update
+      tick % 2 == 0:  order change detect   → orders
+      tick % 2 == 0:  login status (if active) → login  [disabled — proxy]
+      tick % 3 == 0:  auth /health proxy     → auth
+      tick % 5 == 0:  heartbeat status       → status
+    """
+    global _log_positions, _log_buffer
+
+    # Initialize log positions to end-of-file so we only stream new lines
+    for name, path in LOG_FILES.items():
         try:
-            with db._get_conn() as conn:
-                rows = conn.execute("SELECT service_name, last_beat, pid FROM heartbeat").fetchall()
-            now = time.time()
-            svc_data = []
-            for r in rows:
-                rd = dict(r)
-                try:
-                    from datetime import datetime
-                    age = now - datetime.fromisoformat(rd["last_beat"]).timestamp()
-                    rd["age_seconds"] = int(age)
-                    rd["status"] = "healthy" if age < STALE_THRESHOLD else "stale"
-                except Exception:
-                    rd["age_seconds"] = None
-                    rd["status"] = "unknown"
-                svc_data.append(rd)
-            await _broadcast_sse("status", {"services": svc_data})
+            with open(path, "r", errors="replace") as f:
+                f.seek(0, 2)
+                _log_positions[name] = f.tell()
         except Exception:
-            pass
-        await asyncio.sleep(5)
+            _log_positions[name] = 0
+        _log_buffer[name] = []
+
+    # Track last-seen order updated_at + count for change detection
+    _last_order_ts: str | None = None
+    _last_order_count: int = -1
+    # Initialize to latest updated_at so we don't re-blast all orders on restart
+    try:
+        with db._get_conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(updated_at) as ts FROM orders"
+            ).fetchone()
+            if row and row["ts"]:
+                _last_order_ts = row["ts"]
+            cnt = conn.execute("SELECT count(*) FROM orders").fetchone()[0]
+            _last_order_count = cnt
+    except Exception:
+        pass
+
+    tick = 0
+    while not _shutdown.is_set():
+        tick += 1
+
+        # ── Every 1s: incremental log tail ──
+        if tick % 1 == 0:
+            for name in LOG_FILES:
+                new_lines = _read_new_lines(name)
+                if new_lines:
+                    # Append to ring buffer
+                    buf = _log_buffer.get(name, [])
+                    buf.extend(new_lines)
+                    if len(buf) > LOG_BUFFER_MAX:
+                        buf = buf[-LOG_BUFFER_MAX:]
+                    _log_buffer[name] = buf
+                    await _broadcast_sse("log_update", {
+                        "name": name,
+                        "lines": new_lines,
+                        "reset": False,
+                    })
+
+        # ── Every 2s: order change detection ──
+        if tick % 2 == 0:
+            try:
+                with db._get_conn() as conn:
+                    rows = conn.execute(
+                        """SELECT order_id, platform, status, item_name,
+                                  quantity, character, customer_name,
+                                  created_at, updated_at
+                           FROM orders
+                           ORDER BY created_at DESC LIMIT 50""",
+                    ).fetchall()
+                    total = conn.execute(
+                        "SELECT count(*) FROM orders"
+                    ).fetchone()[0]
+
+                # Check if anything changed since last broadcast
+                current_max = None
+                for r in rows:
+                    ua = r["updated_at"]
+                    if ua and (current_max is None or ua > current_max):
+                        current_max = ua
+
+                if current_max != _last_order_ts or total != _last_order_count:
+                    _last_order_ts = current_max
+                    _last_order_count = total
+                    await _broadcast_sse("orders", {
+                        "orders": [dict(r) for r in rows],
+                        "total": total,
+                    })
+            except Exception:
+                pass
+
+        # ── Every 3s: auth status ──
+        if tick % 3 == 0:
+            try:
+                auth_data = await proxy_get("/health")
+                if not auth_data.get("error"):
+                    await _broadcast_sse("auth", auth_data)
+            except Exception:
+                pass
+
+        # ── Every 5s: service status ──
+        if tick % 5 == 0:
+            try:
+                status_data = _build_service_status()
+                await _broadcast_sse("status", status_data)
+            except Exception:
+                pass
+
+        await asyncio.sleep(1)
 
 
 # ── Main ──
