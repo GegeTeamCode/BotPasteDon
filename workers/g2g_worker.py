@@ -128,6 +128,7 @@ _RETRY_KEYWORDS = (
 _TERMINAL_KEYWORDS = (
     "cannot perform action when order item status",
     "order item is not in delivering",
+    "proof file(s) unsupported",
 )
 
 
@@ -293,6 +294,26 @@ async def _download_g2g_file(file_info: dict, api_key: str = "") -> Optional[str
         return None
 
 
+async def _qty_already_delivered(api_id: str, qty: int, auth) -> bool:
+    """Confirm via G2G marketplace truth that an 'already delivering' rejection on
+    submit_delivered_qty is an idempotent re-dispatch (qty was set by a prior
+    dispatch), NOT a real failure. Returns True only if delivered_qty already
+    covers our qty AND the order isn't cancelled/refunded — so a genuinely
+    cancelled order still re-raises -> terminal -> FAILED.
+    """
+    try:
+        detail = await api_client.call_with_retry(
+            api_client.get_order_detail, api_id, auth, auth.seller_id)
+    except Exception as e:
+        logger.warning(f"[{api_id}] cannot confirm delivered_qty, treating as failure: {e}")
+        return False
+    status = str(detail.get("order_item_status") or "").lower()
+    delivered = int(detail.get("delivered_qty") or 0)
+    if status in ("cancelled", "canceled", "refunded", "cancellation_requested"):
+        return False
+    return delivered >= qty
+
+
 async def handle_g2g_api(order_id: str, task_data: dict):
     """Delivery via REST API — runs steps individually to track progress."""
     import re
@@ -337,9 +358,23 @@ async def handle_g2g_api(order_id: str, task_data: dict):
                 api_client.submit_delivered_qty, api_id, qty, auth, auth.seller_id)
             completed_steps.add("qty")
             logger.info(f"[{order_id}] delivered_qty={qty} OK")
-        except Exception:
-            task_data["skip_steps"] = list(completed_steps)
-            raise
+        except Exception as e:
+            # Idempotent-success guard: "cannot perform action when order item
+            # status is delivering/delivered" means the qty was ALREADY set by a
+            # prior dispatch (e.g. double-dispatch from a duplicate scanner). Do
+            # NOT mark FAILED — confirm via marketplace truth, then resume the
+            # remaining steps. A cancelled/refunded order (qty mismatch) re-raises
+            # and stays terminal. See .ai decision 2026-06-14.
+            if "cannot perform action when order item status" in str(e).lower() \
+                    and await _qty_already_delivered(api_id, qty, auth):
+                completed_steps.add("qty")
+                task_data["skip_steps"] = list(completed_steps)
+                logger.warning(
+                    f"[{order_id}] qty already delivered on G2G (idempotent re-dispatch); "
+                    f"resuming proof/chat without re-submitting qty")
+            else:
+                task_data["skip_steps"] = list(completed_steps)
+                raise
 
     # Step 2: Upload proof
     if "proof" not in completed_steps and files:

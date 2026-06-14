@@ -5,6 +5,45 @@ Mới nhất ở trên cùng.
 
 ---
 
+## 2026-06-14 — G2G delivery: idempotent "already delivering" + skip unsupported proof
+
+**Quyết định:** Hai sửa ở delivery dispatch (money flow):
+
+1. **`workers/g2g_worker.py::handle_g2g_api` Step qty** — khi `submit_delivered_qty`
+   báo `cannot perform action when order item status is delivering/delivered`,
+   KHÔNG mark FAILED. Gọi `get_order_detail` xác nhận `delivered_qty >= qty` và
+   `order_item_status` không phải cancelled/refunded → coi qty đã xong, **resume
+   proof/chat** (helper `_qty_already_delivered`). Order bị hủy/hoàn (qty mismatch)
+   vẫn re-raise → terminal → FAILED.
+2. **`shared/g2g_api.py::_upload_proofs`** — G2G `upload_url` chỉ nhận
+   `{jpg,jpeg,png,gif,mp4,mov}`, từ chối `webp/heic/no-ext` (verified live). Cô lập
+   từng file: skip đuôi không hỗ trợ + per-file try/except → submit phần upload
+   được. Nếu KHÔNG file nào upload được → raise terminal `proof file(s) unsupported`
+   (manual) thay vì retry vô hạn / complete không proof. Content-type map thêm gif/mov.
+
+**Ngữ cảnh:** 4 order đã giao (delivered_qty đúng, awaiting_buyer_confirmation) nhưng
+DB kẹt FAILED/RETRY_PENDING. (a) 3 order: double-dispatch (scanner trùng) → lần 2
+gặp "already delivering" → `_classify_error` map terminal → FAILED, dù hàng ĐÃ giao.
+(b) 1 order (LVB9): proof có file `.webp` → `get_upload_url` raise → cả step proof
+chết → retry vô hạn (attempt 56/100).
+
+**Alternative đã loại:**
+
+- *Map "cannot perform action..." → COMPLETED (đề xuất glm)*: nguy hiểm — keyword là
+  prefix, khớp cả `...cancelled/refunded` → đánh dấu order hủy thành COMPLETED = lỗi
+  tiền. Phải parse status + re-query `delivered_qty`.
+- *Flip 4 row sang COMPLETED trực tiếp*: 3 order có `skip=None` → proof CHƯA upload;
+  flip mù sẽ mất proof. Resume mới đúng.
+- *Convert webp/heic→jpg*: cần Pillow (chưa cài trên server) → để sau; trước mắt skip.
+
+**Root cause double-dispatch:** scanner trùng — đã fix ở phiên 2026-06-13 (watchdog
+token + single launcher).
+
+**Deploy:** code đã push + deploy lên bot prod `.220` (worker_g2g). Recovery 4 order:
+xử riêng (LVB9 tự heal qua retry; 3 order FAILED cần re-dispatch).
+
+---
+
 ## 2026-06-13 — ERP `status_update` REGRESSION: khôi phục `db.set_value` + block `In Delivery`
 
 **Quyết định:** `gege_custom api/botpastedon.py::status_update` quay lại

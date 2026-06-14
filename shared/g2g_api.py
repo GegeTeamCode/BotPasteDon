@@ -40,6 +40,11 @@ class RateLimitError(APIError):
         self.retry_after = retry_after
 
 
+# G2G order/upload_url rejects any other extension with HTTP 400
+# "unsupported file type" (verified live 2026-06-14: webp/heic/no-ext fail).
+_G2G_PROOF_EXTS = {"jpg", "jpeg", "png", "gif", "mp4", "mov"}
+
+
 class G2GAPIClient:
     """REST API client for G2G orders — no browser needed."""
 
@@ -246,7 +251,8 @@ class G2GAPIClient:
 
         ext = file_path.rsplit(".", 1)[-1].lower() if "." in file_path else ""
         ct = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-              "mp4": "video/mp4"}.get(ext, "image/png")
+              "gif": "image/gif", "mp4": "video/mp4",
+              "mov": "video/quicktime"}.get(ext, "image/png")
 
         # S3 presigned POST — standard requests library (no fingerprint needed)
         files = {"file": (new_filename or "proof.png", file_data, ct)}
@@ -318,27 +324,57 @@ class G2GAPIClient:
 
     async def _upload_proofs(self, order_item_id: str, file_paths: list,
                               auth: G2GAuthData, seller_id: str = ""):
-        """Upload proof files as a single step."""
+        """Upload proof files as a single step.
+
+        G2G's upload_url endpoint rejects unsupported extensions (webp/heic/no-ext)
+        with HTTP 400. Isolate each file so ONE bad file can't abort the whole step
+        (that caused infinite retry — e.g. order LVB9 with .webp). Skip unsupported
+        / per-file failures and submit whatever uploaded. If NOTHING uploads, raise
+        a terminal-classified error so it surfaces for manual handling instead of
+        retrying forever or silently completing without proof.
+        """
         upload_list = []
+        skipped = []
         for fp in file_paths:
             filename = fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-            presigned = await self.call_with_retry(
-                self.get_upload_url, filename, auth, seller_id)
-            if not presigned.get("url"):
-                logger.warning("[%s] No upload URL for %s", order_item_id, filename)
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            if ext not in _G2G_PROOF_EXTS:
+                logger.warning("[%s] Skipping unsupported proof %s (ext=%s); G2G accepts %s",
+                               order_item_id, filename, ext or "none", sorted(_G2G_PROOF_EXTS))
+                skipped.append(filename)
                 continue
-            new_name = presigned.get("new_filename", filename)
-            s3_key = presigned.get("fields", {}).get("key", f"delivery_proof/{new_name}")
-            ok = self.upload_to_s3(presigned, fp)
-            if ok:
-                upload_list.append(s3_key)
-                logger.info("[%s] Uploaded %s → %s", order_item_id, filename, s3_key)
+            try:
+                presigned = await self.call_with_retry(
+                    self.get_upload_url, filename, auth, seller_id)
+                if not presigned.get("url"):
+                    logger.warning("[%s] No upload URL for %s", order_item_id, filename)
+                    skipped.append(filename)
+                    continue
+                new_name = presigned.get("new_filename", filename)
+                s3_key = presigned.get("fields", {}).get("key", f"delivery_proof/{new_name}")
+                if self.upload_to_s3(presigned, fp):
+                    upload_list.append(s3_key)
+                    logger.info("[%s] Uploaded %s → %s", order_item_id, filename, s3_key)
+                else:
+                    skipped.append(filename)
+            except AuthError:
+                raise  # auth must bubble up so the worker refreshes JWT
+            except Exception as e:
+                logger.warning("[%s] Proof upload failed for %s, skipping: %s",
+                               order_item_id, filename, str(e)[:120])
+                skipped.append(filename)
 
         if upload_list:
             await self.call_with_retry(
                 self.submit_delivery_proof, order_item_id, upload_list, auth, seller_id)
-            logger.info("[%s] delivery_proof submitted (%d files)",
-                         order_item_id, len(upload_list))
+            logger.info("[%s] delivery_proof submitted (%d files, %d skipped)",
+                         order_item_id, len(upload_list), len(skipped))
+        elif skipped:
+            # Nothing uploadable — surface for manual handling (terminal), do not
+            # loop forever nor complete the order without any proof.
+            raise APIError(
+                f"delivery_proof: all {len(skipped)} proof file(s) unsupported "
+                f"file type, manual upload needed: {skipped}", 400)
 
     async def _send_chat(self, order_item_id: str, message: str,
                           auth: G2GAuthData, seller_id: str = ""):
