@@ -5,6 +5,50 @@ Mới nhất ở trên cùng.
 
 ---
 
+## 2026-06-14 — ERP `status_update`: ghi Order Log thủ công + integration user BotPasteDon
+
+**Quyết định:** Trong `gege_custom api/botpastedon.py::status_update`, sau
+`frappe.db.set_value(...)` phải **ghi Order Log thủ công** + publish realtime:
+
+```python
+create_order_log(reference_doctype="Sell Order", reference_name=so_name,
+                 action="State Change", from_state=current, to_state=target,
+                 performed_by=(_BOT_LOG_USER if frappe.db.exists("User", _BOT_LOG_USER) else None),
+                 note=f"Marketplace sync: {platform}/{mp_state}")
+frappe.publish_realtime("list_update", {"doctype": "Sell Order"}, after_commit=True)
+```
+`_BOT_LOG_USER = "botpastedon@gegeteam.net"`.
+
+**Ngữ cảnh:** Order card có bảng Order Log, được điền tự động bởi doc_events hook
+`order_log_on_update` (utils.py) — hook này chỉ chạy trên `.save()` (on_update).
+Vì `status_update` đã đổi sang `db.set_value` (để tránh 403, xem entry 2026-06-13),
+nó **bỏ qua doc lifecycle → hook không bắn → transition Delivered→Completed qua
+webhook KHÔNG ghi log** (và không refresh realtime list). Fix: replicate y việc
+hook làm — tạo Order Log `action="State Change"` + `frappe.publish_realtime`.
+
+**Integration user:** `Order Log.created_by` là **Link(User)**. Đặt thẳng chuỗi
+"BotPasteDon" sẽ fail link validation → status_update lỗi lại. User "BotPasteDon"
+**không tồn tại ở đâu** (đã tìm prod + 3 site dev: 0 user dính bot/paste; Bot
+Credential chỉ có "Eldorado Bot"/"G2G Bot"). Đã **tạo User** `botpastedon@gegeteam.net`
+(full_name "BotPasteDon", login disabled, user_type System User) trên **CẢ dev `.228`
+LẪN prod `.100`**. Code dùng `performed_by` defensive (`if exists else None` →
+fallback session user) nên không bao giờ vỡ webhook dù user vắng.
+
+**Alternative đã loại:**
+
+- *Quay lại `.save()` để hook tự ghi log*: kéo lại bug 403 permission. Loại.
+- *Ghi "BotPasteDon" vào note, created_by giữ Guest*: cột "ai thực hiện" vẫn Guest,
+  không đúng yêu cầu. Loại.
+- *`set_user("BotPasteDon")` (như new_order)*: user không tồn tại → roleless; và với
+  Link field thì `ignore_permissions` không bỏ qua link validation. Loại.
+
+**Trạng thái deploy:** Code ĐÃ áp + verify trên **dev `.228`** (test rollback: Guest
+tạo được Order Log, created_by hiển thị "BotPasteDon"). **Prod `.100`: user đã tạo,
+nhưng code `botpastedon.py` mới (Order Log + block In Delivery + performed_by) CHƯA
+deploy** — bộ phận ERP deploy trọn gói từ dev working tree.
+
+---
+
 ## 2026-06-14 — G2G delivery: idempotent "already delivering" + skip unsupported proof
 
 **Quyết định:** Hai sửa ở delivery dispatch (money flow):
