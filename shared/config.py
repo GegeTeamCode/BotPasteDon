@@ -38,6 +38,13 @@ if not ERP_STATUS_UPDATE_URL and ERP_WEBHOOK_URL:
     ERP_STATUS_UPDATE_URL = ERP_WEBHOOK_URL.rsplit(".", 1)[0] + ".status_update"
 STATUS_SYNC_INTERVAL_SEC = int(os.getenv("STATUS_SYNC_INTERVAL_SEC", "1800"))  # 30 min
 
+# ERP go-live cutoff. status_sync only reconciles orphaned terminal orders created
+# on/after this date — orders predating ERP were never in ERP and must not be pushed
+# (would only produce no_so noise). ISO for Eldorado (raw_data.createdDate is ISO),
+# epoch-ms for G2G (raw_data.created_at is epoch ms).
+ERP_GO_LIVE_ISO = os.getenv("ERP_GO_LIVE_ISO", "2026-05-29")
+ERP_GO_LIVE_MS = int(os.getenv("ERP_GO_LIVE_MS", "1779926400000"))  # 2026-05-29T00:00:00Z
+
 # ── Chrome / Selenium ──
 CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH", "")
 HEADLESS_MODE = os.getenv("HEADLESS_MODE", "false").lower() in ("true", "1", "yes")

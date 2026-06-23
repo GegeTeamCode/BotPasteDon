@@ -10,6 +10,8 @@ from shared.database import Database
 from shared.logging_config import setup_logger
 
 from status_sync.erp_client import ERPClient
+from status_sync.reconcile import reconcile_unpushed
+from shared.config import ERP_GO_LIVE_ISO
 
 logger = setup_logger("status_sync.eldo")
 
@@ -34,6 +36,17 @@ class EldoSync:
         self.platform = "eldorado"
 
     async def run_once(self) -> None:
+        # Reconcile orphaned terminal pushes first — independent of marketplace
+        # auth/API, so it runs even if the eldo fetch below fails this cycle.
+        try:
+            await reconcile_unpushed(
+                self.db, self.erp, self.platform,
+                [s.lower() for s in TRACKED_STATES],
+                created_json_path="$.createdDate", created_min=ERP_GO_LIVE_ISO,
+            )
+        except Exception as e:
+            logger.warning("reconcile_unpushed failed: %s", e)
+
         try:
             auth = await self.auth_mgr.get_auth()
         except Exception as e:

@@ -10,6 +10,8 @@ from shared.database import Database
 from shared.logging_config import setup_logger
 
 from status_sync.erp_client import ERPClient
+from status_sync.reconcile import reconcile_unpushed
+from shared.config import ERP_GO_LIVE_MS
 
 logger = setup_logger("status_sync.g2g")
 
@@ -41,6 +43,16 @@ class G2GSync:
         self.platform = "g2g"
 
     async def run_once(self) -> None:
+        # Reconcile orphaned terminal pushes first — independent of marketplace
+        # auth/API, so it runs even if the g2g fetch below fails this cycle.
+        try:
+            await reconcile_unpushed(
+                self.db, self.erp, self.platform, list(TRACKED_STATES),
+                created_json_path="$.created_at", created_min=ERP_GO_LIVE_MS,
+            )
+        except Exception as e:
+            logger.warning("reconcile_unpushed failed: %s", e)
+
         try:
             auth = await self.auth_mgr.get_auth()
         except Exception as e:

@@ -61,10 +61,14 @@ SERVICES = {
         "dashboard.server",
         "nohup venv/bin/python -u -m dashboard.server > /tmp/dashboard.log 2>&1 &",
     ),
+    "status_sync": (
+        "-m status_sync",
+        "nohup venv/bin/python -u -m status_sync > /tmp/status_sync.log 2>&1 &",
+    ),
 }
 # Restart order for "all" (dependency-aware: auth -> workers -> coordinator -> scanners -> dashboard)
 ALL_ORDER = ["auth", "worker_g2g", "worker_eldo", "coordinator",
-             "scanner_g2g", "scanner_eldo", "dashboard"]
+             "scanner_g2g", "scanner_eldo", "dashboard", "status_sync"]
 
 
 def main():

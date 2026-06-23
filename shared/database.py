@@ -552,6 +552,36 @@ class Database:
             finally:
                 conn.close()
 
+    def get_unpushed_marketplace(self, platform: str, states, limit: int = 1000,
+                                 created_json_path: Optional[str] = None,
+                                 created_min=None):
+        """Terminal-state orders recorded locally but never successfully pushed to ERP
+        (last_pushed_at IS NULL). Optionally bound to orders created on/after a cutoff
+        (created_min) read from raw_data via json_extract(created_json_path) — used to
+        skip pre-ERP-go-live orders that ERP never had. Newest first so recent
+        completions reconcile (and credit) first.
+        """
+        if not states:
+            return []
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                ph = ",".join("?" * len(states))
+                sql = ("SELECT order_id, order_item_id, marketplace_state, "
+                       "marketplace_state_at, raw_data FROM marketplace_status "
+                       f"WHERE platform=? AND last_pushed_at IS NULL "
+                       f"AND marketplace_state IN ({ph})")
+                params = [platform, *states]
+                if created_json_path is not None and created_min is not None:
+                    sql += " AND json_extract(raw_data, ?) >= ?"
+                    params += [created_json_path, created_min]
+                sql += " ORDER BY last_synced_at DESC LIMIT ?"
+                params.append(limit)
+                rows = conn.execute(sql, params).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
     # ── marketplace_disputes (G2G cases) ────────────────────────────────────
 
     def get_dispute(self, platform: str, case_id: str) -> Optional[Dict]:
