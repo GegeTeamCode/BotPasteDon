@@ -62,7 +62,9 @@ SERVICES = {
         "nohup venv/bin/python -u -m dashboard.server > /tmp/dashboard.log 2>&1 &",
     ),
     "status_sync": (
-        "-m status_sync",
+        # No leading '-': pgrep -f treats a pattern starting with '-' as a flag
+        # and fails to match, leaving the old process alive (duplicate-spawn).
+        "python -u -m status_sync",
         "nohup venv/bin/python -u -m status_sync > /tmp/status_sync.log 2>&1 &",
     ),
 }
