@@ -23,6 +23,12 @@ HAR/
 # Temp / debug scripts
 tmp_*
 
+# Backup files (in-place edits leave these — never commit)
+*.bak
+*.bak.*
+*.bak-*
+*.bak_*
+
 # Environment
 .env
 .env.local
