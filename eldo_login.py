@@ -53,7 +53,7 @@ def main():
     print("Profile saved.")
     print()
     print("Copy to LXC:")
-    print('  scp -r "d:\\Code Bot\\BotPasteDon\\chrome_profile_eldo" root@192.168.2.220:/opt/BotPasteDon/')
+    print('  scp -r "d:\\Project\\GeGeERPNext\\BotPasteDon\\chrome_profile_eldo" root@192.168.2.220:/opt/BotPasteDon/')
 
 
 if __name__ == "__main__":
