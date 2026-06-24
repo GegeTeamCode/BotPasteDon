@@ -337,16 +337,37 @@ class G2GAPIScanner:
             qty = re.sub(r'\s+', ' ', qty).strip()
 
         # Pricing fields for ERP — use actual transaction prices (not rounded listing prices)
+        from decimal import Decimal
+
         earning = raw.get("earning")
         commission_fee = raw.get("commission_fee_amount")
         commission_rate = raw.get("commission_rate")
 
-        # total_price = earning + channel_fee using Decimal to avoid floating point errors
+        # VAT (EU buyers): G2G withholds commission VAT (e.g. UK 20%) on top of the
+        # commission fee. It is exposed per tax line in multi_commission_info[]
+        # (short_title "VAT", tax_with_qty = the absolute amount); tax_exist flags it.
+        # `earning` is already net of VAT, so the gross the buyer actually paid =
+        # earning + commission_fee + VAT (== offer_amount). We send VAT explicitly so
+        # ERP records vat_native AND derives gross correctly; without it the order's
+        # gross is understated by the VAT and vat_native stays 0 (earning happens to
+        # stay right only because total_price absorbs the shortfall — see ERP
+        # botpastedon.py: earning = gross - sell_fee - vat).
+        vat = Decimal("0")
+        if raw.get("tax_exist"):
+            for tax in (raw.get("multi_commission_info") or []):
+                if isinstance(tax, dict) and tax.get("tax_with_qty") not in (None, ""):
+                    try:
+                        vat += Decimal(str(tax["tax_with_qty"]))
+                    except Exception:
+                        pass
+
+        # total_price = gross actually paid = earning + commission_fee + VAT
+        # (Decimal to avoid float errors). Falls back to offer_amount if components
+        # are missing. For non-EU orders VAT is 0, so this is unchanged.
         total_price = ""
         if earning and commission_fee:
             try:
-                from decimal import Decimal
-                total_price = str(Decimal(str(earning)) + Decimal(str(commission_fee)))
+                total_price = str(Decimal(str(earning)) + Decimal(str(commission_fee)) + vat)
             except Exception:
                 total_price = str(raw.get("offer_amount", ""))
 
@@ -355,7 +376,6 @@ class G2GAPIScanner:
         unit_price = ""
         if total_price:
             try:
-                from decimal import Decimal
                 up = Decimal(total_price) / Decimal(str(qty))
                 unit_price = format(up, "f").rstrip("0").rstrip(".")
             except Exception:
@@ -388,5 +408,7 @@ class G2GAPIScanner:
             "earning": str(earning) if earning else None,
             "channel_fee": str(commission_fee) if commission_fee else None,
             "channel_fee_rate": str(commission_rate) if commission_rate else None,
+            # VAT (absolute, EU commission VAT). None when no tax → ERP defaults to 0.
+            "vat": (format(vat, "f").rstrip("0").rstrip(".") if vat else None),
             "order_date": order_date,
         }
