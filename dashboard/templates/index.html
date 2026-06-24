@@ -237,6 +237,7 @@ tr:hover td{background:rgba(31,111,235,.04)}
         </h3>
         <div class="stat-row"><span class="label">JWT</span><span class="value" x-text="auth.g2g?.has_jwt ? 'Yes' : 'None'"></span></div>
         <div class="stat-row"><span class="label">Expires</span><span class="value" x-text="fmtDur(auth.g2g?.jwt_expires_in || 0)"></span></div>
+        <div class="stat-row" title="refresh_token còn lại — hết hạn phải đăng nhập lại G2G (auto-login + OTP)"><span class="label">RT (re-login)</span><span class="badge" :class="rtBadge.cls" x-text="rtBadge.text"></span></div>
         <div class="stat-row"><span class="label">Profile</span><span class="value" x-text="(auth.g2g?.active_profile || '--').replace('chrome_profile_','')"></span></div>
         <div class="progress-bar">
           <div class="fill" :class="jwtProgressCls" :style="`width:${jwtProgress}%`"></div>
@@ -465,6 +466,17 @@ function dashboard() {
       if (g.fresh) return { text: 'Fresh', cls: 'badge-ok' };
       if (g.has_jwt) return { text: 'Stale', cls: 'badge-warn' };
       return { text: 'No JWT', cls: 'badge-err' };
+    },
+    get rtBadge() {
+      const g = this.auth.g2g || {};
+      const s = g.refresh_token_expires_in || 0;
+      const age = g.refresh_last_ok_age;
+      if (!s) return { text: '--', cls: 'badge-warn' };
+      const txt = this.fmtDurLong(s);
+      // critical: <2 ngày, hoặc chuỗi refresh đứt >6h (token bắt đầu trôi về hết hạn)
+      if (s < 2*86400 || (age != null && age > 6*3600)) return { text: txt, cls: 'badge-err' };
+      if (s < 4*86400 || (age != null && age > 2*3600)) return { text: txt, cls: 'badge-warn' };
+      return { text: txt, cls: 'badge-ok' };
     },
     get eldoBadge() {
       const el = this.auth.eldo || {};
@@ -843,6 +855,14 @@ function dashboard() {
       if (s == null) return '--';
       if (s <= 0) return 'Expired';
       return Math.floor(s/60) + 'm ' + (s%60) + 's';
+    },
+    fmtDurLong(s) {
+      if (s == null) return '--';
+      if (s <= 0) return 'HẾT HẠN';
+      const d = Math.floor(s/86400), h = Math.floor((s%86400)/3600), m = Math.floor((s%3600)/60);
+      if (d > 0) return d + 'd ' + h + 'h';
+      if (h > 0) return h + 'h ' + m + 'm';
+      return m + 'm';
     },
     fmtVN(iso) {
       if (!iso) return '--';

@@ -340,6 +340,8 @@ class G2GAuth(PlatformAuth):
         self._consecutive_failures = 0
         self._last_failure_time = 0
         self._captcha_until = 0  # timestamp: skip auto-login until this time
+        self.refresh_token_exp_ms = 0  # epoch ms; when refresh_token dies → re-login needed
+        self.refresh_last_ok = 0       # last successful backend refresh (chain-health signal)
 
     def _try_backend_refresh(self) -> Optional[dict]:
         """Mint a fresh JWT via the G2G refresh endpoint — no browser. Only
@@ -368,6 +370,9 @@ class G2GAuth(PlatformAuth):
             "user_agent": self.data.get("user_agent", DEFAULT_USER_AGENT),
         }
         self.captured_at = time.time()
+        self.refresh_last_ok = time.time()
+        if result.get("refresh_token_exp"):
+            self.refresh_token_exp_ms = result["refresh_token_exp"]
         self._consecutive_failures = 0
         logger.info(
             "[G2G] backend refresh OK | new JWT exp=%dmin | %d cookies",
@@ -812,7 +817,13 @@ def _g2g_backend_refresh(jwt: str, cookies: dict, user_agent: str = "") -> Optio
         v = payload.get(ck)
         if v:
             new_cookies[ck] = v
-    return {"jwt_token": new_jwt, "cookies": new_cookies}
+    return {
+        "jwt_token": new_jwt,
+        "cookies": new_cookies,
+        # epoch ms — when the refresh_token itself expires (slides ~12 days on
+        # every refresh). Surfaced on the dashboard as the "re-login by" countdown.
+        "refresh_token_exp": payload.get("refresh_token_exp"),
+    }
 
 
 def _eldo_backend_refresh(cookies: dict, xsrf_token: str, user_agent: str = "",
@@ -1474,6 +1485,16 @@ async def handle_health(request: web.Request):
             "fresh": g2g_auth.is_fresh(),
             "active_profile": g2g_auth.profile_dir,
             "cookies": len(g2g_auth.data.get("cookies", {})) if g2g_auth.data else 0,
+            # refresh_token countdown — time left before a manual G2G re-login is needed
+            "refresh_token_exp_ms": g2g_auth.refresh_token_exp_ms,
+            "refresh_token_expires_in": (
+                int(max(0, g2g_auth.refresh_token_exp_ms / 1000 - time.time()))
+                if g2g_auth.refresh_token_exp_ms else 0
+            ),
+            "refresh_last_ok_age": (
+                int(time.time() - g2g_auth.refresh_last_ok)
+                if g2g_auth.refresh_last_ok else None
+            ),
         },
         "eldo": {
             "has_cookies": bool(eldo_auth.data and eldo_auth.data.get("cookies")),
