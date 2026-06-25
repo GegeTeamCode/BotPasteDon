@@ -256,6 +256,9 @@ async def process_task(task_data: dict):
             # Files get cleaned on COMPLETED, TERMINAL, or RETRY_CAP paths above.
             # Coordinator is not notified — order is in-flight retry, thread stays open.
     finally:
+        # Delete the /tmp/erp_evidence_* copies downloaded this attempt (always
+        # re-downloadable from the ERP dict on retry). Prevents the 7.3GB leak.
+        cleanup_files(task_data.get("_downloaded_tmp", []))
         PROCESSING_TASKS.discard(order_id)
 
 
@@ -335,14 +338,20 @@ async def handle_g2g_api(order_id: str, task_data: dict):
 
     skip_steps = set(task_data.get("skip_steps", []))
 
-    # Download ERP dict files to local paths
+    # Download ERP dict files to local paths.
+    # Track the downloaded /tmp copies so process_task can delete them after the
+    # attempt (re-downloaded on retry). Discord PROOF_DIR paths (str) pass through
+    # and keep their own cleanup-on-terminal in process_task.
     erp_api_key = task_data.get("erp_api_key", "")
     files = []
+    downloaded_tmp = []
+    task_data["_downloaded_tmp"] = downloaded_tmp  # cleaned in process_task.finally
     for fp in raw_files:
         if isinstance(fp, dict):
             local = await _download_g2g_file(fp, erp_api_key)
             if local:
                 files.append(local)
+                downloaded_tmp.append(local)
         else:
             files.append(fp)
     if files != raw_files and files:

@@ -159,11 +159,18 @@ async def lock_thread(ctx, logger, platform: str = "", order_id: str = ""):
 
 def cleanup_files(files):
     for f in files:
+        # Only path-like entries are deletable. ERP file-info is a dict
+        # ({url, evidence_id, name}); the actual downloaded copy lives at a
+        # separate local path (tracked as task_data["_downloaded_tmp"]).
+        # Skipping dicts here prevents the silent TypeError that used to make
+        # this a no-op and leak /tmp/erp_evidence_* forever.
+        if not isinstance(f, (str, Path)):
+            continue
         try:
             p = Path(f)
             if p.exists():
                 p.unlink()
-        except:
+        except Exception:
             pass
 
 

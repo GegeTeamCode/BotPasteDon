@@ -173,6 +173,9 @@ async def process_task(task_data: dict):
             db.update_order_status(order_id, ORDER_FAILED, error_message=err_msg)
             await _notify_coordinator(order_id, thread_id, success=False)
     finally:
+        # Delete /tmp/erp_evidence_* copies downloaded this attempt (re-downloadable
+        # on retry). Prevents the evidence-file disk leak.
+        cleanup_files(task_data.get("_downloaded_tmp", []))
         PROCESSING_TASKS.discard(order_id)
 
 
@@ -287,6 +290,12 @@ async def handle_eldo_api(order_id: str, task_data: dict):
     files = task_data.get("files", [])
     erp_api_key = task_data.get("erp_api_key", "")
 
+    # Track /tmp copies downloaded from ERP dicts so process_task can delete them
+    # after the attempt (re-downloaded on retry). Discord PROOF_DIR paths (str)
+    # are NOT tracked here — they keep cleanup-on-terminal in process_task.
+    downloaded_tmp = []
+    task_data["_downloaded_tmp"] = downloaded_tmp  # cleaned in process_task.finally
+
     # Inject API key into file dicts so _download_file can use it
     if erp_api_key:
         for fp in files:
@@ -333,6 +342,8 @@ async def handle_eldo_api(order_id: str, task_data: dict):
                     if not local_path:
                         logger.warning(f"[{order_id}] Failed to download: {fp}")
                         continue
+                    if isinstance(fp, dict):
+                        downloaded_tmp.append(local_path)  # /tmp copy → dọn sau
 
                     file_info = await talkjs_client.upload_file(local_path, conv_id)
                     if not file_info:
