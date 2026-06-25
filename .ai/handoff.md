@@ -1,3 +1,23 @@
+# Handoff
+
+> Section mới nhất ở trên cùng. Phần cũ giữ nguyên bên dưới làm lịch sử.
+
+## 2026-06-26 — G2G cancel/resolution alert (CODE XONG, chờ deploy)
+
+- **Cụm "G2G cancel/resolution → ERP"** — cấu phần BOT: push alert cancel-request/dispute cho ERP.
+  Plan: [`current-plan.md`](./current-plan.md). Master: [`../../frappe-erp15-gegecurrency/.ai/current-plan.md`](../../frappe-erp15-gegecurrency/.ai/current-plan.md).
+- **ERP đã commit** (`23a6ad4`, nhánh `feat/g2g-cancel-resolution`, test 8/8 + full app 120/120).
+- **Bot đã code (py_compile OK):** `_sync_cases` rewrite — phân loại `report_case` (`cancel`→`cancel_requested`,
+  còn lại→`disputed`), push **alert ON** khi case `open`/`escalate` + chưa alert, **OFF** khi `close` + đang alert;
+  payload thêm `alert`/`report_case`/`report_reason`/`case_status`. `notified_pushed_at` = cờ "ERP có alert active"
+  (idempotent + retry khi push fail, không spam ~239 case đã close). Thêm `db.set_dispute_notified`. Classifier
+  `_classify_case` + `_OPEN_CASE_STATES`. Doc-sync `docs/architecture.md` + `.ai/decisions.md` (supersede 2026-06-07).
+- **CÒN:** commit bot (main) + **deploy SAU khi ERP lên prod** (`deploy_git.py status_sync`) — kẻo push state ERP
+  chưa hiểu (ERP trả `ignored`, an toàn nhưng vô ích). + FE banner (cụm riêng).
+- **Files:** `status_sync/g2g_sync.py`, `shared/database.py` (+`docs/`, `.ai/`).
+
+---
+
 # Handoff — 2026-06-13 (Dashboard SSE realtime refactoring)
 
 > Previous handoff 2026-06-10 moved to decisions.md + task-log.md.

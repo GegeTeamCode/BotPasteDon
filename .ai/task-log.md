@@ -5,6 +5,19 @@ mới nhất ở trên cùng.
 
 ---
 
+## 2026-06-26
+
+- `feat(status_sync): G2G cancel/resolution alert ON/OFF + report_case classify` — **CODE XONG (py_compile OK), chờ commit+deploy**
+  - Cấu phần BOT của cụm "G2G cancel/resolution → ERP" (ERP đã commit `23a6ad4`, test 8/8 + 120/120).
+  - `_sync_cases` rewrite: phân loại `report_case` (`cancel`→`cancel_requested`, còn lại→`disputed`);
+    push **alert ON** khi case `open`/`escalate` + chưa alert, **OFF** khi `close` + đang alert;
+    payload thêm `alert`/`report_case`/`report_reason`/`case_status`. Bỏ luồng cũ (map mọi case→`disputed`,
+    chỉ push khi `open`). `notified_pushed_at` = cờ "ERP có alert active" → idempotent + retry push-fail +
+    không spam 239 case đã close. Thêm `db.set_dispute_notified`; `_classify_case`+`_OPEN_CASE_STATES`.
+  - Doc-sync: `docs/architecture.md` (state map + schema comment) + `.ai/decisions.md` (entry 2026-06-26 +
+    supersede 2026-06-07 "mọi cancelled→Refunded").
+  - **Phụ thuộc:** deploy `status_sync` SAU khi ERP lên prod. `deploy_git.py status_sync`. Plan: `.ai/current-plan.md`.
+
 ## 2026-06-13
 
 - `feat(dashboard): SSE push realtime + Alpine.js reactive UI` — `7ed8c53`

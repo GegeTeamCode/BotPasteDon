@@ -635,3 +635,24 @@ class Database:
                 return prev
             finally:
                 conn.close()
+
+    def set_dispute_notified(self, platform: str, case_id: str, notified: bool) -> None:
+        """Mark/clear that ERP currently holds a pushed alert for this case.
+
+        notified_pushed_at doubles as the "active pushed alert" flag: set it after a
+        successful alert-ON push, clear it after a successful alert-OFF (case closed)
+        push. This makes ON/OFF idempotent and survives a failed push (flag stays as-is
+        so the next cycle retries) without re-pushing a clear for cases ERP never saw.
+        """
+        val = "CURRENT_TIMESTAMP" if notified else "NULL"
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                conn.execute(
+                    f"UPDATE marketplace_disputes SET notified_pushed_at={val} "
+                    "WHERE platform=? AND case_id=?",
+                    (platform, case_id),
+                )
+                conn.commit()
+            finally:
+                conn.close()

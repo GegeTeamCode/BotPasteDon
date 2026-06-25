@@ -5,6 +5,31 @@ Mới nhất ở trên cùng.
 
 ---
 
+## 2026-06-26 — G2G cancel/resolution: push alert NON-BLOCKING + ERP tự quyết tiền/state
+
+**Quyết định:** `status_sync/g2g_sync.py::_sync_cases` phân loại G2G case theo `report_case`
+(`cancel`→`cancel_requested`, còn lại→`disputed`) và push **alert NON-BLOCKING** sang ERP: ON khi
+case mở (`open`/`escalate`), OFF khi `close`. ERP chỉ set/clear field `custom_marketplace_alert` —
+**KHÔNG đổi `workflow_state`** → trader vẫn giao hàng. Terminal (`cancelled`) ERP tự quyết: chưa từng
+credit ví → `Cancelled`; đã credit → `Refunded` + đảo ví (mirror ALE In→Out, không đụng kho).
+
+**Ngữ cảnh:** User báo (1a) đơn chưa completed bị khách mở Resolution → G2G "cancel request" nhưng ERP
+không cảnh báo; (1b) đơn đã Completed bị G2G cancel → tiền đòi lại nhưng ERP không trừ ví. Điều tra DB
+live `.220`: `report_case` = `cancel` (239) / `did_not_receive` (7) là classifier thật; `marketplace_status`
+không có `cancellation_requested` → tín hiệu chỉ ở `marketplace_disputes`.
+
+**Alternative đã loại:**
+- Map case → workflow_state `Disputed` (cũ): SAI — chặn nút giao hàng + không phân biệt cancel/dispute.
+- Chỉ push khi `status=='open'` (cũ): trượt vì đa số case đã `close` lúc sync; + không clear khi đóng.
+- Thêm cột `last_pushed_alert`: thừa — tái dùng `notified_pushed_at` làm cờ "ERP có alert active"
+  (set khi ON OK, clear khi OFF OK) → idempotent + retry khi push fail + không spam history đã close.
+
+**Implementation:** `_classify_case` + `_OPEN_CASE_STATES={open,escalate}` + `db.set_dispute_notified`.
+ERP side: `gege_custom/.ai/decisions.md` 2026-06-26 (field + `_reverse_marketplace_wallet` + tách
+Cancelled/Refunded). Plan: `.ai/current-plan.md`. Deploy: ERP prod TRƯỚC → `deploy_git.py status_sync`.
+
+---
+
 ## 2026-06-14 — ERP `status_update`: ghi Order Log thủ công + integration user BotPasteDon
 
 **Quyết định:** Trong `gege_custom api/botpastedon.py::status_update`, sau
@@ -441,6 +466,9 @@ trong `*.run_once()` (state_counts table rỗng = chưa từng chạy).
 ---
 
 ## 2026-06-07 — ERP state mapping: `g2g.cancelled → Refunded`, không `Cancelled`
+
+> ⚠️ **SUPERSEDED 2026-06-26** (xem entry trên cùng): không còn "mọi cancelled→Refunded".
+> ERP tự quyết theo sổ của chính nó — chưa từng credit ví → `Cancelled`; đã credit → `Refunded` + đảo ví.
 
 **Quyết định:** Khi G2G chuyển order sang `cancelled`, ERP `workflow_state`
 set thành `Refunded` (không phải `Cancelled`).

@@ -20,7 +20,17 @@ logger = setup_logger("status_sync.g2g")
 # `delivering` is intentionally NOT here — traders handle that.
 TRACKED_STATES = ("completed", "cancelled")
 
-# We don't have a list endpoint for `disputed`; we synthesize that from cases.
+# Resolution/dispute cases come from list_my_cases (not a list-by-status endpoint).
+# `report_case` classifies the buyer's intent → ERP raises a NON-BLOCKING alert:
+#   cancel  -> cancel_requested  (yêu cầu hủy)
+#   else    -> disputed          (did_not_receive / khác)
+# Case statuses that mean "alert active" (ERP shows warning) vs closed (clear).
+_OPEN_CASE_STATES = {"open", "escalate"}
+
+
+def _classify_case(report_case) -> str:
+    """G2G case report_case -> ERP alert marketplace_state."""
+    return "cancel_requested" if (report_case or "").lower() == "cancel" else "disputed"
 
 # Counts endpoint returns these keys; we use them as tripwires.
 COUNT_KEYS_TO_FETCH_LIST = {
@@ -146,11 +156,15 @@ class G2GSync:
             self.db.mark_marketplace_pushed(self.platform, order_id, ok)
 
     async def _sync_cases(self, auth, push: bool) -> None:
-        """Fetch list_my_cases (paginate), push synthesized 'disputed' state to ERP
-        for newly-open cases."""
+        """Fetch list_my_cases (paginate) and push a NON-BLOCKING alert to ERP:
+        ON when a buyer resolution opens (classified cancel_requested/disputed from
+        report_case), OFF when it closes. ERP only sets/clears a warning field — it never
+        touches workflow_state, so the trader can keep delivering. The terminal money/state
+        decision still comes from the order's own `completed`/`cancelled` status."""
         loop = asyncio.get_running_loop()
         next_key = ""
         scanned = 0
+        pushed_on = pushed_off = 0
         for _ in range(20):  # safety cap on pagination
             try:
                 results, next_key = await loop.run_in_executor(
@@ -167,34 +181,55 @@ class G2GSync:
                 if not case_id or not order_id:
                     continue
                 scanned += 1
+                report_case = case.get("report_case")
+                report_reason = case.get("report_reason")
                 raw = json.dumps(case, ensure_ascii=False, default=str)
-                prev = self.db.upsert_dispute(
+
+                # `notified_pushed_at` (set when last_alert pushed OK) is our "ERP holds an
+                # active alert" flag — read it BEFORE the upsert overwrites timestamps.
+                existing = self.db.get_dispute(self.platform, case_id)
+                had_alert = bool(existing and existing.get("notified_pushed_at"))
+
+                self.db.upsert_dispute(
                     self.platform, case_id, order_id, status,
-                    report_case=case.get("report_case"),
-                    report_reason=case.get("report_reason"),
-                    report_qty=case.get("report_qty"),
-                    raw_data=raw,
+                    report_case=report_case, report_reason=report_reason,
+                    report_qty=case.get("report_qty"), raw_data=raw,
                 )
-                # New open case (just inserted or just transitioned to open)
-                # synthesize 'disputed' to ERP. Only on push cycles.
-                if push and status == "open" and prev != "open":
-                    payload = {
-                        "platform": self.platform,
-                        "external_order_id": order_id,
-                        "marketplace_state": "disputed",
-                        "previous_state": None,
-                        "marketplace_state_at": case.get("created_at"),
-                        "is_dispute_open": True,
-                        "raw_payload": case,
-                    }
-                    ok = await self.erp.push_status_update(payload)
-                    if ok:
-                        self.db.upsert_dispute(
-                            self.platform, case_id, order_id, status,
-                            mark_notified=True,
-                        )
+                if not push:
+                    continue  # silent backfill
+
+                now_open = status in _OPEN_CASE_STATES
+                # Push ON only when an open case isn't alerted yet; OFF only when a closed
+                # case still has an alert in ERP. Skips already-closed history (no spam) and
+                # retries naturally next cycle if a push failed (flag unchanged).
+                if now_open and not had_alert:
+                    alert_state, alert_on = _classify_case(report_case), True
+                elif not now_open and had_alert:
+                    alert_state, alert_on = _classify_case(report_case), False
+                else:
+                    continue
+
+                payload = {
+                    "platform": self.platform,
+                    "external_order_id": order_id,
+                    "marketplace_state": alert_state,
+                    "alert": alert_on,
+                    "report_case": report_case,
+                    "report_reason": report_reason,
+                    "case_status": status,
+                    "marketplace_state_at": case.get("created_at"),
+                    "raw_payload": case,
+                }
+                ok = await self.erp.push_status_update(payload)
+                if ok:
+                    self.db.set_dispute_notified(self.platform, case_id, alert_on)
+                    if alert_on:
+                        pushed_on += 1
+                    else:
+                        pushed_off += 1
             if not next_key:
                 break
 
         if scanned:
-            logger.debug("g2g cases scanned: %d", scanned)
+            logger.info("g2g cases scanned=%d alert_on=%d alert_off=%d",
+                        scanned, pushed_on, pushed_off)

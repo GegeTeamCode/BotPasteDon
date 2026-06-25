@@ -109,7 +109,7 @@ Moi cycle goi `G2GSync.run_once()` va `EldoSync.run_once()` song song qua `async
 
 - **`G2GSync`** (`g2g_sync.py`):
   - Tripwire: `count_my_orders` so sanh voi snapshot `marketplace_state_counts`. Fetch `list_my_order` cho `completed`/`cancelled` khi `delivering` count doi hoac `last_order_completed_at` tien. (`issues` count la signal khong-action, chi de notice.)
-  - Disputes: `list_my_cases` chay **moi cycle** (20-page cap), KHONG gated by tripwire. Synthesize `disputed` push khi case `prev != "open"` → `"open"`.
+  - Cases/resolution: `list_my_cases` chay **moi cycle** (20-page cap), KHONG gated by tripwire. Phan loai theo `report_case` (`cancel`→`cancel_requested`, con lai→`disputed`) → push **alert NON-BLOCKING** sang ERP: ON khi case mo (`open`/`escalate`) + chua tung alert, OFF khi case `close` + dang co alert. ERP chi set/clear field `custom_marketplace_alert`, KHONG doi workflow_state (trader van giao hang). `notified_pushed_at` = co "ERP dang co alert active" (idempotent + retry khi push fail, khong spam history da close).
   - State list khong paginate cap o status_sync layer — relies on `list_orders_by_status` return all.
 - **`EldoSync`** (`eldo_sync.py`):
   - Tripwire: `statesCount` so sanh snapshot. Fetch `/api/orders/me/seller/orders` cho cac state co count delta.
@@ -117,16 +117,17 @@ Moi cycle goi `G2GSync.run_once()` va `EldoSync.run_once()` song song qua `async
 - **`ERPClient`** (`erp_client.py`): aiohttp `POST status_update` voi exponential backoff (2/4/8s, default 3 attempts). 4xx → KHONG retry (validation/auth fix manually). 5xx → retry. Headers: `X-API-Key` lay tu `ERP_API_KEY_G2G` hoac `ERP_API_KEY_ELDO` tuy `payload.platform`.
 - **First run** (`marketplace_state_counts` rong): silent backfill — insert toan bo state hien tai vao DB KHONG push ERP (tranh spam ~10k transitions gia). Tu cycle 2: chi push khi `prev_state != new_state`.
 
-State mapping → ERP `workflow_state`:
-| Marketplace state | ERP workflow_state |
+State mapping → ERP (terminal = workflow_state; alert = field, non-blocking):
+| Marketplace state | ERP xu ly |
 |---|---|
-| g2g.completed / eldo.Completed | Completed |
-| g2g.cancelled / eldo.Canceled | Refunded |
-| g2g (case open synthesized) / eldo.Disputed | Disputed |
+| g2g.completed / eldo.Completed | → Completed (+credit vi, idempotent) |
+| g2g.cancelled / eldo.Canceled | ERP tu quyet theo so cua chinh no: chua tung credit (khong ALE "In") → **Cancelled**; da credit → **Refunded** + dao vi (ALE Out mirror In, KHONG dung kho). (Sua decision 2026-06-07 "moi cancelled→Refunded".) |
+| g2g `cancel_requested` (case report_case=cancel) | **Alert** field `custom_marketplace_alert="Cancel Requested"` — KHONG doi workflow_state |
+| g2g `disputed` (case khac) / eldo.Disputed | **Alert** field `custom_marketplace_alert="Dispute Open"` — KHONG doi workflow_state |
 | eldo.Delivered | Delivered |
 | eldo.Received / eldo.PendingDelivery | (ignored) |
 
-PROTECTED workflow states ERP webhook KHONG override: `Refunded`, `Partially Refunded`, `Cancellation Requested`, `Outstanding`, `Payment Pending`.
+PROTECTED workflow states ERP webhook KHONG override: `Refunded`, `Partially Refunded`, `Cancellation Requested`, `Outstanding`, `Payment Pending`. (`Cancellation Requested` = luong **manual**; status_sync KHONG set state nay nua — chi set field alert.)
 
 **ERP-side `status_update` handler safety layers** (gege_custom `api/botpastedon.py::status_update`, deployed 2026-06-10):
 
@@ -257,13 +258,13 @@ CREATE TABLE marketplace_disputes (
     platform TEXT NOT NULL,
     case_id TEXT NOT NULL,
     order_id TEXT NOT NULL,
-    case_status TEXT NOT NULL,         -- "open" / "closed" / ...
-    report_case TEXT,
+    case_status TEXT NOT NULL,         -- "open" / "escalate" / "close"
+    report_case TEXT,                  -- "cancel" (=cancel request) / "did_not_receive" (=dispute) / ...
     report_reason TEXT,
     report_qty INTEGER,
     first_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_synced_at DATETIME,
-    notified_pushed_at DATETIME,        -- NULL until ERP gets "disputed" push
+    notified_pushed_at DATETIME,        -- flag "ERP dang co alert active": set khi push alert-ON OK, clear khi push alert-OFF OK
     raw_data TEXT,
     PRIMARY KEY (platform, case_id)
 );
