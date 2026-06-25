@@ -198,8 +198,10 @@ Disk `/` 32G dùng 18G (59%). `systemd-tmpfiles-clean` chỉ đỡ một phần 
 `/opt/BotPasteDon/proofs/` = 282MB/73 file (bản ghi bot tự tạo) cũng **không dọn** (oldest 20/05).
 
 **Plan fix.**
-1. **Code:** trong `handle_g2g_api`/eldo — sau khi upload xong, xoá file tmp đã tải (gọi
-   `cleanup_files(files)` trên path THẬT, hoặc `try/finally` unlink local paths). Cả 2 worker.
+1. ✅ **ĐÃ LÀM (commit `3ab63cd`, deploy 2026-06-25):** track path tmp tải-từ-dict ở
+   `task_data["_downloaded_tmp"]` → unlink trong `process_task.finally` (cả g2g + eldo);
+   harden `cleanup_files` bỏ qua entry non-path. Verified: code trên server, worker restart
+   sạch. (Chờ 1 đơn-có-evidence để xác nhận empiric.)
 2. **Một lần (server):** `rm -f /tmp/erp_evidence_*` (giải phóng ~7.3 GB ngay) + quyết policy
    `proofs/` (xoá >30 ngày, hay giữ làm bằng chứng — user quyết).
    - ✅ **Đã chạy 2026-06-25** (xoá file >60min): 2934→14 file, 7.3G→22M, disk 59%→35%.

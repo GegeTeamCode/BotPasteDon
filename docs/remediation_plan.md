@@ -9,7 +9,7 @@
 
 ---
 
-## Phase 1 — #8 Rò rỉ evidence (P0, làm trước tiên)
+## Phase 1 — #8 Rò rỉ evidence (P0) — ✅ ĐÃ LÀM 2026-06-25 (commit `3ab63cd`)
 
 **Vì sao P0:** ở vài ngàn đơn/ngày, mỗi proof ~1-5MB → 3-15 GB/ngày đổ vào `/tmp` không
 dọn → disk 32G đầy trong 1-3 ngày → **sập toàn bộ bot**.
