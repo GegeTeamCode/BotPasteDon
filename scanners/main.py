@@ -16,7 +16,7 @@ from shared.database import Database
 from shared.driver_manager import get_driver
 from shared.discord_utils import format_order_message, match_webhook, send_discord_webhook, send_erp_webhook
 from shared.logging_config import setup_logger
-from shared.constants import URL_DEFAULTS, ORDER_NOTIFIED
+from shared.constants import URL_DEFAULTS, ORDER_NOTIFIED, ORDER_FAILED, ORDER_EXTRACT_FAILED
 
 from scanners.eldorado_scanner import EldoradoScanner
 from scanners.eldorado_scanner_api import EldoradoAPIScanner
@@ -158,6 +158,66 @@ async def run_scanner(platform: str):
                     )
                 )
 
+        async def recovery_loop():
+            """Recover g2g orders stuck EXTRACT_FAILED (delivering on G2G but the
+            detail was unreadable at scan time). Re-fetch detail; once confirmed
+            delivering, rewrite the row with full data + flip to NOTIFIED so the
+            existing erp_retry_loop pushes it to ERP (idempotent claim). Cancelled
+            orders are marked FAILED so they stop retrying."""
+            import json as _json
+            while not _shutdown_event.is_set():
+                try:
+                    rows = db.get_orders_by_status("g2g", ORDER_EXTRACT_FAILED)
+                    if rows:
+                        logger.info("recovery: %d EXTRACT_FAILED order(s)", len(rows))
+                    for row in rows:
+                        if _shutdown_event.is_set():
+                            break
+                        oid = row["order_id"]
+                        api_id = oid
+                        raw = row.get("raw_data")
+                        if raw:
+                            try:
+                                api_id = _json.loads(raw).get("_api_id") or oid
+                            except Exception:
+                                pass
+                        try:
+                            auth = await scanner.auth_mgr.get_auth()
+                            rloop = asyncio.get_running_loop()
+                            detail = await rloop.run_in_executor(
+                                None, scanner.api.get_order_detail,
+                                api_id, auth, scanner._seller_id or "")
+                        except Exception as e:
+                            logger.warning("recovery: detail fetch failed for %s: %s", oid, e)
+                            continue
+                        st = str(detail.get("order_item_status") or "").lower()
+                        if st in ("cancelled", "canceled", "refunded"):
+                            db.update_order_status(oid, ORDER_FAILED,
+                                                   error_message=f"recovery: order {st}")
+                            logger.info("recovery: %s is %s -> FAILED", oid, st)
+                            continue
+                        if st not in ("delivering", "delivered", "completed"):
+                            logger.info("recovery: %s still %r, retry next cycle", oid, st)
+                            continue
+                        order_data = scanner._map_order_data(detail, row.get("order_url", ""))
+                        # Rewrite row with full data + flip to NOTIFIED so the
+                        # erp_retry_loop (erp_synced still 0) pushes it idempotently.
+                        db.update_order_status(
+                            oid, ORDER_NOTIFIED,
+                            order_url=order_data.get("url", ""),
+                            game=order_data.get("game", ""),
+                            server=order_data.get("server", ""),
+                            item_name=order_data.get("itemName", ""),
+                            quantity=order_data.get("quantity", ""),
+                            character=order_data.get("character", ""),
+                            customer_name=order_data.get("customerName", ""),
+                            raw_data=_json.dumps(order_data, ensure_ascii=False),
+                        )
+                        logger.info("recovery: %s ready -> handed to erp_retry_loop", oid)
+                except Exception as e:
+                    logger.error("recovery_loop error: %s", e)
+                await asyncio.sleep(120)
+
         async def heartbeat():
             while not _shutdown_event.is_set():
                 db.update_heartbeat(f"scanner_{platform}", os.getpid())
@@ -165,6 +225,7 @@ async def run_scanner(platform: str):
 
         asyncio.create_task(heartbeat())
         asyncio.create_task(erp_retry_loop(platform))
+        asyncio.create_task(recovery_loop())
         scan_task = asyncio.create_task(api_scan_loop())
 
         logger.info(f"G2G API Scanner running (PID: {os.getpid()})")

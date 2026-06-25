@@ -361,7 +361,8 @@ class Database:
                          WHERE (erp_synced = 0
                                 OR (erp_synced = 2
                                     AND updated_at <= datetime('now', ?)))
-                         AND status NOT IN ("DETECTED", "FAILED")
+                         AND status NOT IN ("DETECTED", "FAILED",
+                                            "EXTRACT_FAILED", "NEEDS_MANUAL")
                          AND erp_retry_count < ?"""
                 params: list = [f"-{int(claim_stale_after_sec)} seconds", max_retries]
                 if platform is not None:

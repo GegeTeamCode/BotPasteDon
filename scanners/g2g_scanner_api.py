@@ -14,9 +14,30 @@ from shared.g2g_auth import G2GAuthManager
 from shared.g2g_api import G2GAPIClient, APIError, AuthError
 from shared.database import Database
 from shared.logging_config import setup_logger
+from shared.constants import ORDER_EXTRACT_FAILED, ORDER_NEEDS_MANUAL
 from scanners.base_scanner import normalize_id, check_keywords
 
 logger = setup_logger("scanner.g2g.api")
+
+# Max consecutive scans an order may fail to reach 'delivering' before we stop
+# retrying it and flag it NEEDS_MANUAL (prevents an unstartable order looping).
+MAX_START_ATTEMPTS = 5
+
+
+class NotReadyError(Exception):
+    """start_deliver/mark_as_delivering didn't take — order is not actually in
+    'delivering' state, so its delivery_info is incomplete. Do NOT push to ERP;
+    retry on a later scan instead."""
+
+
+class DetailFetchError(Exception):
+    """start+mark succeeded (order IS delivering on G2G) but get_order_detail was
+    unreadable. Must not be dropped — record EXTRACT_FAILED for the recovery loop."""
+
+    def __init__(self, msg: str, api_id: str, url: str = ""):
+        super().__init__(msg)
+        self.api_id = api_id
+        self.url = url
 
 
 class G2GAPIScanner:
@@ -28,6 +49,8 @@ class G2GAPIScanner:
         self.config = config
         self.db = db
         self._seller_id: Optional[str] = None
+        # order_id -> consecutive 'not ready' attempts (in-memory, capped by MAX)
+        self._start_attempts: Dict[str, int] = {}
 
     async def scan_order_list(self) -> List[Dict]:
         """Poll API for pending orders."""
@@ -90,17 +113,31 @@ class G2GAPIScanner:
         return result
 
     async def extract_order_data(self, order_info: dict) -> Optional[Dict]:
-        """Fetch order detail → start deliver → mark delivering → re-fetch.
+        """Public entry. Runs the extract (with JWT-refresh retry) and routes the
+        two recoverable failure modes:
+          - NotReadyError    → order not yet 'delivering' (incomplete info): don't
+                               push, retry on later scans, cap to NEEDS_MANUAL.
+          - DetailFetchError → order IS delivering but detail unreadable: record
+                               EXTRACT_FAILED for the recovery loop (never lost).
+        """
+        order_id = order_info["id"]
+        try:
+            data = await self._extract_with_auth_retry(order_info)
+            if data is not None:
+                self._start_attempts.pop(order_id, None)  # clear counter on success
+            return data
+        except NotReadyError as e:
+            return self._handle_not_ready(order_id, order_info, e)
+        except DetailFetchError as e:
+            return self._handle_detail_failed(order_id, order_info, e)
 
-        Matches HAR 4 flow:
-        1. GET  /order/item/{id}          (View details)
-        2. PUT  /order/item/{id}/start_deliver
-        3. PUT  /order/item/{id}/mark_as_delivering
-        4. GET  /order/item/{id}          (re-fetch full data)
+    async def _extract_with_auth_retry(self, order_info: dict) -> Optional[Dict]:
+        """Fetch order detail → start deliver → mark delivering → re-fetch.
 
         On AuthError (401): invalidates JWT cache, waits for auth service to
         capture a fresh JWT, then retries once. Does NOT retry blindly — only
         proceeds after confirming the new JWT is different from the failed one.
+        NotReadyError / DetailFetchError propagate to extract_order_data.
         """
         from shared.g2g_api import AuthError
 
@@ -114,7 +151,7 @@ class G2GAPIScanner:
         except Exception:
             pass
 
-        # Initial attempt
+        # Initial attempt (NotReady/DetailFetch bubble up to extract_order_data)
         try:
             return await self._do_extract(api_id, order_id, order_info)
         except AuthError as e:
@@ -140,9 +177,49 @@ class G2GAPIScanner:
             logger.error(
                 "Extract failed for %s even with fresh JWT: %s", order_id, e)
             return None
+        except (NotReadyError, DetailFetchError):
+            raise
         except Exception as e:
             logger.error("Extract error for %s: %s", order_id, e)
             return None
+
+    def _handle_not_ready(self, order_id: str, order_info: dict,
+                          err: Exception) -> None:
+        """Case 1: order never reached 'delivering' → don't push incomplete info.
+        Retry on later scans; after MAX_START_ATTEMPTS flag NEEDS_MANUAL so it
+        stops looping and surfaces for a human."""
+        n = self._start_attempts.get(order_id, 0) + 1
+        self._start_attempts[order_id] = n
+        if n >= MAX_START_ATTEMPTS:
+            logger.error("Order %s not ready after %d attempts (%s) — NEEDS_MANUAL",
+                         order_id, n, err)
+            self.db.insert_order("g2g", order_id, {
+                "url": order_info.get("url", ""),
+                "itemName": "NEEDS_MANUAL (start_deliver never took)",
+            })
+            self.db.update_order_status(order_id, ORDER_NEEDS_MANUAL,
+                                        error_message=str(err)[:500])
+            self._start_attempts.pop(order_id, None)
+        else:
+            logger.warning("Order %s not ready (attempt %d/%d): %s — retry next scan",
+                           order_id, n, MAX_START_ATTEMPTS, err)
+        return None
+
+    def _handle_detail_failed(self, order_id: str, order_info: dict,
+                              err: "DetailFetchError") -> None:
+        """Case 2: order IS delivering on G2G but detail unreadable → record
+        EXTRACT_FAILED with the api_id so the recovery loop re-fetches + pushes."""
+        logger.error("Order %s delivering on G2G but detail unreadable (%s) — "
+                     "recording EXTRACT_FAILED for recovery", order_id, err)
+        self.db.insert_order("g2g", order_id, {
+            "url": getattr(err, "url", "") or order_info.get("url", ""),
+            "itemName": "(extract failed — pending recovery)",
+            "_api_id": getattr(err, "api_id", order_id),
+        })
+        self.db.update_order_status(order_id, ORDER_EXTRACT_FAILED,
+                                    error_message=str(err)[:500])
+        self._start_attempts.pop(order_id, None)
+        return None
 
     async def _wait_for_fresh_jwt(self, old_jwt: Optional[str],
                                   timeout: int = 60) -> Optional[str]:
@@ -163,50 +240,49 @@ class G2GAPIScanner:
 
     async def _do_extract(self, api_id: str, order_id: str,
                           order_info: dict) -> Optional[Dict]:
-        """Execute the 4-step extract flow. Raises AuthError on 401."""
+        """Best-effort transition to delivering, then GATE on the order's actual
+        order_item_status read back from get_order_detail.
+
+        Raises:
+          AuthError        on 401 (outer JWT-refresh path handles it).
+          DetailFetchError if start+mark may have committed 'delivering' but the
+                           detail is unreadable (don't drop the order).
+          NotReadyError    if the order never moved to delivering (start_deliver
+                           didn't take) — its delivery_info is incomplete, so we
+                           must NOT push it to ERP; retry on a later scan.
+        """
         from shared.g2g_api import AuthError
 
         auth = await self.auth_mgr.get_auth()
         loop = asyncio.get_running_loop()
 
-        # Step 1: Start deliver
-        try:
-            await loop.run_in_executor(
-                None, self.api.start_deliver,
-                api_id, auth, self._seller_id or ""
-            )
-            logger.info("Started deliver for %s", order_id)
-        except AuthError:
-            raise
-        except Exception as e:
-            logger.warning("start_deliver for %s: %s", order_id, e)
+        # Best-effort: move to delivering. We do NOT trust the PUT result — it
+        # errors idempotently when the order is already delivering. The real gate
+        # is the order_item_status read below, so a swallowed PUT error is fine
+        # ONLY because we verify the true state afterward.
+        for fn, label in ((self.api.start_deliver, "start_deliver"),
+                          (self.api.mark_as_delivering, "mark_as_delivering")):
+            try:
+                await loop.run_in_executor(None, fn, api_id, auth, self._seller_id or "")
+                logger.info("%s OK for %s", label, order_id)
+            except AuthError:
+                raise
+            except Exception as e:
+                logger.warning("%s for %s: %s", label, order_id, e)
 
-        # Step 2: Mark as delivering
-        try:
-            await loop.run_in_executor(
-                None, self.api.mark_as_delivering,
-                api_id, auth, self._seller_id or ""
-            )
-            logger.info("Marked delivering for %s", order_id)
-        except AuthError:
-            raise
-        except Exception as e:
-            logger.warning("mark_as_delivering for %s: %s", order_id, e)
-
-        # Step 3: Re-fetch full detail after state change.
-        # Retry on transient errors (curl timeout, 5xx). Steps 1+2 already
-        # committed state on G2G — if we give up here, the order is orphaned:
-        # locked in `delivering` on marketplace, never inserted to local DB.
-        # AuthError still raises so the outer JWT-refresh path runs.
+        # Re-fetch full detail. Retry transient errors (curl timeout, 5xx).
+        # If unreadable, the order may already be 'delivering' on G2G → raise
+        # DetailFetchError so it is recorded (EXTRACT_FAILED), never lost.
         await asyncio.sleep(1)
         last_err: Optional[Exception] = None
+        detail = None
         for attempt in range(1, 4):
             try:
                 detail = await loop.run_in_executor(
                     None, self.api.get_order_detail,
                     api_id, auth, self._seller_id or ""
                 )
-                return self._map_order_data(detail, order_info.get("url", ""))
+                break
             except AuthError:
                 raise
             except Exception as e:
@@ -218,14 +294,21 @@ class G2GAPIScanner:
                         order_id, attempt, e, wait,
                     )
                     await asyncio.sleep(wait)
+        if detail is None:
+            raise DetailFetchError(
+                f"get_order_detail failed after 3 attempts: {last_err}",
+                api_id, order_info.get("url", ""))
 
-        logger.error(
-            "get_order_detail for %s gave up after 3 attempts: %s — "
-            "order is in 'delivering' on G2G but NOT in local DB; "
-            "manual recovery needed",
-            order_id, last_err,
-        )
-        return None
+        # GATE: only push to ERP if the order really reached delivering, so we
+        # never push an order whose delivery_info is still incomplete (case 1).
+        # Idempotent-safe: an already-delivering order reads 'delivering' here
+        # and proceeds normally — same happy path as before.
+        status = str(detail.get("order_item_status") or "").lower()
+        if status not in ("delivering", "delivered", "completed"):
+            raise NotReadyError(
+                f"order_item_status={status!r} (not delivering) for {order_id}")
+
+        return self._map_order_data(detail, order_info.get("url", ""))
 
     def _extract_order_id(self, order: dict) -> Optional[str]:
         for key in ("order_item_id", "order_id", "id"):

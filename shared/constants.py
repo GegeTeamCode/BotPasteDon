@@ -22,6 +22,11 @@ ORDER_DELIVERING = "DELIVERING"
 ORDER_COMPLETED = "COMPLETED"
 ORDER_FAILED = "FAILED"
 ORDER_RETRY_PENDING = "RETRY_PENDING"
+# start_deliver+mark OK on G2G but get_order_detail was unreadable at scan time —
+# the order IS delivering on the marketplace; a recovery loop re-fetches + pushes.
+ORDER_EXTRACT_FAILED = "EXTRACT_FAILED"
+# start_deliver never took after repeated tries — order stuck preparing, needs a human.
+ORDER_NEEDS_MANUAL = "NEEDS_MANUAL"
 
 # URLs
 URL_DEFAULTS = {
