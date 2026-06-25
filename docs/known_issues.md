@@ -8,7 +8,7 @@ Mức độ: **P1** = có thể gãy production / mất dữ liệu · **P2** = 
 
 ---
 
-## [P1] #1 — Schema drift: `orders.erp_synced` & `erp_retry_count` thiếu trong code khởi tạo
+## [P1] #1 — Schema drift: `orders.erp_synced` & `erp_retry_count` thiếu trong code khởi tạo — ✅ ĐÃ FIX (commit `33c1bd4`, 2026-06-26: ALTER loop idempotent)
 
 **Mô tả.** 2 cột này đang chạy trong DB production nhưng **không có** trong
 `_init_db()` `CREATE TABLE orders`, cũng không có `ALTER TABLE … ADD COLUMN` nào trong
@@ -44,7 +44,7 @@ for col, ddl in (
 
 ---
 
-## [P2] #2 — `DATABASE_PATH` tương đối → sinh file `orders.db` rỗng lạc chỗ
+## [P2] #2 — `DATABASE_PATH` tương đối → sinh file `orders.db` rỗng lạc chỗ — ✅ ĐÃ FIX (commit `33c1bd4` resolve theo root + xoá 2 file rỗng)
 
 **Mô tả.** `.env` đặt `DATABASE_PATH=data/orders.db` (tương đối). Process chạy sai cwd
 sẽ tạo `orders.db` rỗng ở chỗ khác.
@@ -67,7 +67,7 @@ Sau deploy: xoá 2 file rỗng (mục #3). Không cần đổi `.env`.
 
 ---
 
-## [P3] #3 — Rác trong/ngoài DB: bảng `test_t` + 2 file `orders.db` rỗng
+## [P3] #3 — Rác trong/ngoài DB: bảng `test_t` + 2 file `orders.db` rỗng — ✅ ĐÃ DỌN (2026-06-26: drop test_t + rm 2 file rỗng)
 
 **Mô tả.** Bảng `test_t (id)` rỗng trong `orders.db` (sót từ test). 2 file `orders.db`
 rỗng ở mục #2.
@@ -172,7 +172,11 @@ Mọi đơn đã delivering-trên-G2G **không bao giờ mất**.
 > #6 và #5 nên fix CHUNG (đều ở `_do_extract`): tách rõ 3 bước, mỗi bước fail có đường xử lý
 > riêng — đảm bảo (a) chỉ push khi đủ info, (b) không mất đơn.
 
-## [P2] #9 — Recovery có thể KẸT đơn EXTRACT_FAILED chưa-từng-delivering (phát sinh từ Phase 2)
+## [P2] #9 — Recovery KẸT đơn EXTRACT_FAILED chưa-từng-delivering — ✅ ĐÃ FIX (commit `d8b25db`, 2026-06-26)
+
+> recovery_loop giờ gọi lại `scanner._do_extract` (re-attempt start_deliver+mark) thay vì
+> chỉ get_order_detail; `NotReadyError` mang `status` để cancelled/refunded→FAILED.
+
 
 **Mô tả.** `recovery_loop` (Phase 2) chỉ **re-fetch get_order_detail** rồi promote nếu
 `order_item_status='delivering'`. Nếu một đơn vào `EXTRACT_FAILED` do **lỗi kép**
@@ -189,7 +193,7 @@ Hiện 0 đơn dính.
 để recovery: `cancelled/refunded`→`FAILED`, còn lại→giữ `EXTRACT_FAILED` retry. Như vậy đơn
 chưa-start được start lại mỗi cycle.
 
-## [P2] #7 — Bỏ cơ chế dọn dẹp định kỳ (giữ dữ liệu để điều tra)
+## [P2] #7 — Bỏ cơ chế dọn dẹp định kỳ (giữ dữ liệu để điều tra) — ✅ ĐÃ LÀM (commit `33c1bd4`: cleanup_old_orders→no-op; log bền HOÃN)
 
 **Quyết định (user 2026-06-25).** Dữ liệu không lớn → giữ để điều tra lỗi.
 - **DB:** bỏ `cleanup_old_orders()` (xoá COMPLETED quá hạn + DETECTED >24h), gọi ở

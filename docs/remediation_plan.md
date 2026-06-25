@@ -123,7 +123,15 @@ Cân nhắc bật log chi tiết tạm thời để quan sát tần suất start
 
 ---
 
-## Phase 4 — DB hardening
+## Phase 4 — DB hardening — ✅ ĐÃ LÀM 2026-06-26 (commit `33c1bd4`, +#3 cleanup server)
+
+> ✅ #1 schema migration idempotent · busy_timeout 5s→15s · #2 DATABASE_PATH tuyệt đối ·
+> #7 cleanup_old_orders→no-op · #3 drop test_t + xoá 2 file orders.db rỗng. Validate trên
+> prod DB trước khi bounce (path đúng, busy_timeout=15000, 2 cột có sẵn no-op, cleanup
+> no-op 163→163); bounce `all` sạch, 9 process sống, 0 traceback/no-such-column.
+> ⏸️ **Hoãn (ghi rõ):** gỡ coupling `updated_at`/claim (hoạt động ổn, để khi rảnh); WAL
+> checkpoint thủ công (auto-checkpoint đủ); log bền (đổi launcher — việc hạ tầng riêng).
+
 
 **Mục tiêu:** chịu ghi đa-process khi tải cao mà không `database is locked` / mất ghi.
 (Gộp luôn #1, #2, #7 từ `known_issues.md`.)
