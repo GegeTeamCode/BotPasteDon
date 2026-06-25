@@ -126,14 +126,29 @@ async def send_erp_webhook(
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as resp:
                     if resp.status == 200:
-                        body = await resp.json()
-                        msg = body.get("message", body)
-                        status = msg.get("status", "")
+                        try:
+                            body = await resp.json()
+                            msg = body.get("message", body)
+                            if not isinstance(msg, dict):
+                                msg = {}
+                            status = msg.get("status", "")
+                        except Exception:
+                            msg, status = {}, ""
                         if status == "ok":
                             logger.info(f"ERP accepted: {order_data.get('orderId')} -> {msg.get('sell_order', '')}")
-                        elif status == "duplicate":
+                            return True
+                        if status == "duplicate":
                             logger.debug(f"ERP duplicate: {order_data.get('orderId')}")
-                        return True
+                            return True
+                        # 200 but ERP did NOT create/accept the order (e.g. an
+                        # unexpected skipped/error/ignored status). Do NOT mark
+                        # synced — treating ANY 200 as success was the false-sync
+                        # bug (erp_synced=1 for an order ERP never created). Surface
+                        # it and leave it unsynced so erp_retry_loop re-attempts.
+                        logger.warning(
+                            f"ERP 200 non-success status={status!r} for "
+                            f"{order_data.get('orderId')} — NOT marking synced")
+                        return False
                     if resp.status in (401, 412):
                         logger.error("ERP auth failed: check API key")
                         return False

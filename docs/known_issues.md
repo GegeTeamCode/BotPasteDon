@@ -82,7 +82,16 @@ rm -f /opt/BotPasteDon/orders.db /opt/BotPasteDon/scanners/orders.db
 
 ---
 
-## [P3] #4 — 2 đơn false-sync (THREAD_CREATED, erp_synced=1 nhưng ERP không có)
+## [P3] #4 — 2 đơn false-sync (THREAD_CREATED, erp_synced=1 nhưng ERP không có) — ✅ XỬ LÝ (2026-06-26)
+
+> **2 đơn cụ thể (`...QY7W`, `...AP02`, 31/05):** code webhook ERP lúc đó (2 ngày sau
+> go-live) còn nhiều lỗi → **BỎ QUA** (user quyết, không backfill).
+> **Cơ chế chung (đã hardening, commit kèm):** `send_erp_webhook` (`discord_utils.py`)
+> trước đây `return True` cho **mọi HTTP 200** bất kể `status` body → false-sync nếu ERP trả
+> 200-không-tạo. Hiện `new_order` chỉ trả `ok`/`duplicate` (200) hoặc throw nên vô hại, nhưng
+> đã siết: chỉ `status in (ok, duplicate)` mới `erp_synced=1`; 200 khác → log warning + để
+> erp_retry_loop thử lại / nổi lên (không đánh dấu synced sai).
+
 
 **Mô tả.** Bot ghi `erp_synced=1` (tưởng đã sync) nhưng ERP không có đơn dưới mọi dạng id.
 
