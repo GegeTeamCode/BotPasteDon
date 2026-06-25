@@ -18,6 +18,13 @@ logger = logging.getLogger("g2g.api")
 
 BASE = "https://sls.g2g.com"
 
+# list_my_order returns only 10 rows by default; G2G honors `page_size` (verified
+# live: page_size=100 -> 100 rows). Larger window so a burst of pending orders
+# isn't truncated to the 10 newest (older ones would be invisible until some of
+# the visible ones move out of the queried status). Sequential processing keeps
+# the request rate low, so a big page does not cause a 429 burst.
+LIST_PAGE_SIZE = 100
+
 _IMPERSONATE_POOL = [
     "chrome120", "chrome119", "chrome116", "chrome110",
     "edge99", "edge101",
@@ -98,12 +105,19 @@ class G2GAPIClient:
             seller_id = auth.seller_id or self._seller_id or ""
         r = self._sess.get(
             f"{BASE}/order/list_my_order",
-            params={"seller_id": seller_id, "status": "preparing"},
+            params={"seller_id": seller_id, "status": "preparing",
+                    "page_size": LIST_PAGE_SIZE},
             headers=auth.build_headers(),
             timeout=30,
         )
         try:
             j = self._parse(r, "list_my_order")
+        except RateLimitError as e:
+            # Surface rate limiting (was hidden under the generic APIError below);
+            # the scan loop's interval is the back-off — just skip this cycle.
+            logger.warning("list_my_order rate limited (retry_after=%ss) — skipping cycle",
+                           getattr(e, "retry_after", "?"))
+            return []
         except APIError:
             # 4041 = no results (normal when no pending orders)
             return []
@@ -130,14 +144,15 @@ class G2GAPIClient:
     def list_orders_by_status(self, status: str, auth: G2GAuthData,
                                seller_id: str = "") -> list:
         """List orders filtered by G2G status (delivering / completed / cancelled / ...).
-        Returns list (max ~20 newest by default — G2G list_my_order pagination is
-        limited so we only catch top-of-list changes per cycle)."""
+        Returns up to LIST_PAGE_SIZE (100) newest. For full history use the `next`
+        cursor in the payload (not needed for top-of-list change detection)."""
         if not seller_id:
             seller_id = auth.seller_id or self._seller_id or ""
         r = self._sess.get(
             f"{BASE}/order/list_my_order",
             params={"seller_id": seller_id, "status": status,
-                    "include_pending_proof_only": "0"},
+                    "include_pending_proof_only": "0",
+                    "page_size": LIST_PAGE_SIZE},
             headers=auth.build_headers(),
             timeout=30,
         )

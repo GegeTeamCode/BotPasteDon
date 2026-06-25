@@ -172,6 +172,23 @@ Mọi đơn đã delivering-trên-G2G **không bao giờ mất**.
 > #6 và #5 nên fix CHUNG (đều ở `_do_extract`): tách rõ 3 bước, mỗi bước fail có đường xử lý
 > riêng — đảm bảo (a) chỉ push khi đủ info, (b) không mất đơn.
 
+## [P2] #9 — Recovery có thể KẸT đơn EXTRACT_FAILED chưa-từng-delivering (phát sinh từ Phase 2)
+
+**Mô tả.** `recovery_loop` (Phase 2) chỉ **re-fetch get_order_detail** rồi promote nếu
+`order_item_status='delivering'`. Nếu một đơn vào `EXTRACT_FAILED` do **lỗi kép**
+(start_deliver fail *và* get_order_detail fail — vd 429 hoặc timeout liên tiếp), đơn **chưa
+hề chuyển sang delivering** (vẫn `preparing` trên G2G). Recovery đọc thấy status≠delivering
+→ "retry next cycle" mãi, **không bao giờ gọi lại start_deliver** → kẹt `EXTRACT_FAILED` vĩnh
+viễn → không giao, không vào ERP.
+
+**Tần suất.** Hiếm ở tải hiện tại (cần double-failure), nhưng tăng theo 429 khi scale.
+Hiện 0 đơn dính.
+
+**Plan fix (gọn, ít churn).** Trong `recovery_loop`, thay vì chỉ get_order_detail, gọi lại
+**`scanner._do_extract`** (re-attempt start+mark+gate). Cho `NotReadyError` mang `status`
+để recovery: `cancelled/refunded`→`FAILED`, còn lại→giữ `EXTRACT_FAILED` retry. Như vậy đơn
+chưa-start được start lại mỗi cycle.
+
 ## [P2] #7 — Bỏ cơ chế dọn dẹp định kỳ (giữ dữ liệu để điều tra)
 
 **Quyết định (user 2026-06-25).** Dữ liệu không lớn → giữ để điều tra lỗi.

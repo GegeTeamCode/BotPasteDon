@@ -93,7 +93,17 @@ Cân nhắc bật log chi tiết tạm thời để quan sát tần suất start
 
 ---
 
-## Phase 3 — Pipeline (chịu tải burst)
+## Phase 3 — Pipeline (chịu tải burst) — 🟡 PHẦN 1 ĐÃ LÀM 2026-06-26
+
+> ✅ **Đã làm (commit kèm):** `page_size=100` cho `get_pending_orders` (scanner thấy tới
+> 100 đơn preparing/lần — hết tràn cửa sổ 10) + `list_orders_by_status` (giúp lỗ hổng g2g
+> reconcile chỉ thấy ~20). Probe live: G2G honors `page_size` (limit/page/per_page bị bỏ
+> qua), payload có cursor `next`. Thêm log visibility cho 429. Vòng extract tuần tự = throttle
+> tự nhiên nên page lớn không gây burst 429.
+> ⏸️ **Hoãn (chưa cần / rủi ro cao):** back-off 429 sâu + throttle (3.2 dưới) và song song
+> hoá worker (3.3) — làm khi có tải thật + load-test, không thêm concurrency vào path vừa
+> rewrite. Cursor `next` (phân trang đầy đủ >100) cũng để sau (100 đã dư cho hiện tại).
+
 
 **Mục tiêu:** không bỏ sót đơn lúc burst + không bị marketplace rate-limit đánh sập.
 
