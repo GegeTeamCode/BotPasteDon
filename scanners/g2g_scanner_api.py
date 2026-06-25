@@ -27,7 +27,12 @@ MAX_START_ATTEMPTS = 5
 class NotReadyError(Exception):
     """start_deliver/mark_as_delivering didn't take — order is not actually in
     'delivering' state, so its delivery_info is incomplete. Do NOT push to ERP;
-    retry on a later scan instead."""
+    retry on a later scan instead. `status` carries the order_item_status read
+    back (e.g. 'cancelled') so the recovery loop can act on terminal states."""
+
+    def __init__(self, msg: str, status: str = ""):
+        super().__init__(msg)
+        self.status = status
 
 
 class DetailFetchError(Exception):
@@ -306,7 +311,8 @@ class G2GAPIScanner:
         status = str(detail.get("order_item_status") or "").lower()
         if status not in ("delivering", "delivered", "completed"):
             raise NotReadyError(
-                f"order_item_status={status!r} (not delivering) for {order_id}")
+                f"order_item_status={status!r} (not delivering) for {order_id}",
+                status=status)
 
         return self._map_order_data(detail, order_info.get("url", ""))
 

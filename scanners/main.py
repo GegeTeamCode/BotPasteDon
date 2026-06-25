@@ -21,7 +21,7 @@ from shared.constants import URL_DEFAULTS, ORDER_NOTIFIED, ORDER_FAILED, ORDER_E
 from scanners.eldorado_scanner import EldoradoScanner
 from scanners.eldorado_scanner_api import EldoradoAPIScanner
 from scanners.g2g_scanner import G2GScanner
-from scanners.g2g_scanner_api import G2GAPIScanner
+from scanners.g2g_scanner_api import G2GAPIScanner, NotReadyError, DetailFetchError
 from scanners.base_scanner import shutdown_executor
 
 logger = setup_logger("scanner.main")
@@ -159,11 +159,13 @@ async def run_scanner(platform: str):
                 )
 
         async def recovery_loop():
-            """Recover g2g orders stuck EXTRACT_FAILED (delivering on G2G but the
-            detail was unreadable at scan time). Re-fetch detail; once confirmed
-            delivering, rewrite the row with full data + flip to NOTIFIED so the
-            existing erp_retry_loop pushes it to ERP (idempotent claim). Cancelled
-            orders are marked FAILED so they stop retrying."""
+            """Recover g2g orders stuck EXTRACT_FAILED. Re-runs the FULL extract
+            (_do_extract re-attempts start_deliver + mark_as_delivering, then gates
+            on the real order_item_status) so it un-sticks even orders that never
+            reached delivering (e.g. a 429/timeout double-failure), not only ones
+            already delivering. On success the row is flipped to NOTIFIED with full
+            data so the existing erp_retry_loop pushes it to ERP (idempotent claim).
+            Cancelled/refunded orders are marked FAILED so they stop retrying."""
             import json as _json
             while not _shutdown_event.is_set():
                 try:
@@ -181,27 +183,29 @@ async def run_scanner(platform: str):
                                 api_id = _json.loads(raw).get("_api_id") or oid
                             except Exception:
                                 pass
+                        # Re-run the full extract: re-attempts start_deliver +
+                        # mark_as_delivering (un-sticks orders that never reached
+                        # delivering), then gates on the real order_item_status.
                         try:
-                            auth = await scanner.auth_mgr.get_auth()
-                            rloop = asyncio.get_running_loop()
-                            detail = await rloop.run_in_executor(
-                                None, scanner.api.get_order_detail,
-                                api_id, auth, scanner._seller_id or "")
+                            order_data = await scanner._do_extract(
+                                api_id, oid, {"url": row.get("order_url", "")})
+                        except NotReadyError as e:
+                            st = getattr(e, "status", "")
+                            if st in ("cancelled", "canceled", "refunded"):
+                                db.update_order_status(oid, ORDER_FAILED,
+                                                       error_message=f"recovery: order {st}")
+                                logger.info("recovery: %s is %s -> FAILED", oid, st)
+                            else:
+                                logger.info("recovery: %s not ready (%r), retry next cycle", oid, st)
+                            continue
+                        except DetailFetchError:
+                            logger.info("recovery: %s detail still unreadable, retry next cycle", oid)
+                            continue
                         except Exception as e:
-                            logger.warning("recovery: detail fetch failed for %s: %s", oid, e)
+                            logger.warning("recovery: extract failed for %s: %s", oid, e)
                             continue
-                        st = str(detail.get("order_item_status") or "").lower()
-                        if st in ("cancelled", "canceled", "refunded"):
-                            db.update_order_status(oid, ORDER_FAILED,
-                                                   error_message=f"recovery: order {st}")
-                            logger.info("recovery: %s is %s -> FAILED", oid, st)
-                            continue
-                        if st not in ("delivering", "delivered", "completed"):
-                            logger.info("recovery: %s still %r, retry next cycle", oid, st)
-                            continue
-                        order_data = scanner._map_order_data(detail, row.get("order_url", ""))
-                        # Rewrite row with full data + flip to NOTIFIED so the
-                        # erp_retry_loop (erp_synced still 0) pushes it idempotently.
+                        # Got full data → flip to NOTIFIED (erp_synced still 0) so the
+                        # erp_retry_loop pushes it to ERP idempotently.
                         db.update_order_status(
                             oid, ORDER_NOTIFIED,
                             order_url=order_data.get("url", ""),
