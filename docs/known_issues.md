@@ -133,7 +133,7 @@ thêm — **không nằm trong batch fix ngay**.
 
 # Cập nhật 2026-06-25 — điều tra cơ chế scanner g2g + storage
 
-## [P1] #6 — Case 1: start_deliver/mark fail bị nuốt → ERP nhận đơn THIẾU thông tin giao hàng
+## [P1] #6 — Case 1: start_deliver/mark fail bị nuốt → ERP nhận đơn THIẾU thông tin giao hàng — ✅ ĐÃ FIX (commit `a901344`, deploy 2026-06-26, chung với #5)
 
 **Mô tả.** Trong `g2g_scanner_api.py::_do_extract`, `start_deliver` + `mark_as_delivering`
 (PUT) bọc `except Exception → log warning → CONTINUE` (chỉ `AuthError` raise). Khi 2 PUT
@@ -159,7 +159,7 @@ không ai xử. **Tệ hơn cả mất đơn vì trông như đã xử lý.**
   thật-sự-không-startable không lặp vô hạn.
 - Nguyên tắc: **chỉ push ERP sau khi xác nhận delivering + có đủ delivery_info.**
 
-## [P1] #5(↑) — Case 2: orphan get_order_detail fail — NÂNG từ "design" lên "phải fix dứt điểm"
+## [P1] #5(↑) — Case 2: orphan get_order_detail fail — ✅ ĐÃ FIX (commit `a901344`, deploy 2026-06-26): EXTRACT_FAILED + recovery_loop
 
 **Trạng thái mới.** User xác nhận **đã thực sự xảy ra** (dù hiếm) → fix dứt điểm, không để
 backlog. (Mô tả gốc ở #5 trên.)

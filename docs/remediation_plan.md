@@ -54,7 +54,13 @@ proof Discord → `proofs/` bị dọn khi COMPLETED, giữ khi RETRY.
 
 ---
 
-## Phase 2 — #5/#6 Redesign `_do_extract` (mất đơn / thông tin thiếu)
+## Phase 2 — #5/#6 Redesign `_do_extract` — ✅ ĐÃ LÀM 2026-06-26 (commit `a901344`)
+
+> Deploy scanner_g2g sạch; happy path verified empiric (đơn `1782412824491BE73`:
+> start/mark OK → gate delivering → ERP accepted → SO-260626-EBOWVEDV; 0 false NotReady/
+> EXTRACT_FAILED). Nhánh lỗi (NotReady→NEEDS_MANUAL, EXTRACT_FAILED→recovery) chưa kích
+> hoạt vì chưa gặp lỗi thật — cần theo dõi ca EXTRACT_FAILED/NEEDS_MANUAL đầu tiên.
+
 
 **Mục tiêu (2 nguyên tắc):** (a) **chỉ push ERP sau khi xác nhận delivering + đủ
 delivery_info**; (b) **không bao giờ mất đơn đã delivering trên G2G**.
