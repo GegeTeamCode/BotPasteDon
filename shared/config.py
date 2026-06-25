@@ -58,7 +58,12 @@ SENDBIRD_SESSION_KEY = os.getenv("SENDBIRD_SESSION_KEY", "")
 ELDO_USE_API = os.getenv("ELDO_USE_API", "false").lower() in ("true", "1", "yes")
 
 # ── Database ──
-DATABASE_PATH = os.getenv("DATABASE_PATH", "data/orders.db")
+# Resolve a relative DATABASE_PATH against the project root, NOT the process cwd.
+# A process started from a different directory used to create an empty stray
+# orders.db (e.g. /opt/BotPasteDon/scanners/orders.db) instead of the real one.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_db_path = os.getenv("DATABASE_PATH", "data/orders.db")
+DATABASE_PATH = _db_path if os.path.isabs(_db_path) else str(_PROJECT_ROOT / _db_path)
 
 # ── G2G Auto-login ──
 G2G_EMAIL = os.getenv("G2G_EMAIL", "")

@@ -23,7 +23,11 @@ class Database:
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        # 9 processes share this file; WAL allows one writer at a time. A longer
+        # busy_timeout lets a writer wait out contention (SQLite-native retry)
+        # instead of raising "database is locked". Writes here are tiny, so 15s
+        # is ample headroom for higher order volume.
+        conn.execute("PRAGMA busy_timeout=15000")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -116,12 +120,20 @@ class Database:
                 """)
                 conn.commit()
 
-                # Migrations — add columns if missing
-                try:
-                    conn.execute("ALTER TABLE orders ADD COLUMN retry_data TEXT")
-                    conn.commit()
-                except Exception:
-                    pass
+                # Migrations — add columns if missing (idempotent; on an existing
+                # DB each ALTER raises "duplicate column" and is ignored). These
+                # columns ran in prod but were never in CREATE TABLE nor any ALTER,
+                # so a fresh DB used to crash with "no such column: erp_synced".
+                for col, ddl in (
+                    ("retry_data", "TEXT"),
+                    ("erp_synced", "INTEGER DEFAULT 0"),
+                    ("erp_retry_count", "INTEGER DEFAULT 0"),
+                ):
+                    try:
+                        conn.execute(f"ALTER TABLE orders ADD COLUMN {col} {ddl}")
+                        conn.commit()
+                    except Exception:
+                        pass
             finally:
                 conn.close()
 
@@ -219,28 +231,13 @@ class Database:
                 conn.close()
 
     def cleanup_old_orders(self, max_age_hours: int = CACHE_MAX_AGE_HOURS):
-        with self._lock:
-            conn = self._get_conn()
-            try:
-                # Remove completed orders older than max_age.
-                # FAILED and RETRY_PENDING are preserved: FAILED is audit trail for
-                # terminal failures the operator must inspect; RETRY_PENDING is
-                # in-flight evidence retries that must survive across cycles.
-                conn.execute(
-                    """DELETE FROM orders
-                       WHERE status = 'COMPLETED'
-                       AND updated_at < datetime('now', ?)""",
-                    (f"-{max_age_hours} hours",),
-                )
-                # Remove DETECTED orders older than 24h (no longer pending on API)
-                conn.execute(
-                    """DELETE FROM orders
-                       WHERE status = 'DETECTED'
-                       AND updated_at < datetime('now', '-24 hours')""",
-                )
-                conn.commit()
-            finally:
-                conn.close()
+        # Disabled 2026-06-26 (#7): keep full order history for investigation.
+        # Volume is small (~tens of orders/day) so the table grows slowly and
+        # SQLite handles it for years. Previously this purged COMPLETED older than
+        # max_age_hours and DETECTED older than 24h — which destroyed exactly the
+        # evidence needed to debug filter/extract issues. Callers are unchanged
+        # (this is now a no-op) so it can be re-enabled later if needed.
+        return
 
     # ── pending_dispatches (coordinator → worker dispatch retry) ──────────────
 
