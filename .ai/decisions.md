@@ -5,6 +5,29 @@ Mới nhất ở trên cùng.
 
 ---
 
+## 2026-06-26 — ERP-driven reconcile (lỗ hổng g2g list-window) + Eldo dispute parity
+
+**Quyết định:** Thêm `status_sync/erp_reconcile.py::reconcile_from_erp` — gọi ERP endpoint
+`get_pending_marketplace_orders(g2g)` lấy đơn non-terminal của ERP → lookup `get_order_detail` per-order
+→ push terminal thật. Chạy mỗi `ERP_RECONCILE_EVERY_N_CYCLES` cycle (g2g_sync). Throttle + batch +
+back-off (qua `marketplace_status.last_synced_at`) + dừng khi 429. Đóng lỗ hổng list-window (status_sync
+chỉ thấy ~100 đơn mới nhất → đơn cũ kẹt; prod ~578 đơn G2G). ERP stateless, bot giữ throttle/back-off.
+
+**Ngữ cảnh:** `reconcile_unpushed` cũ là bot-driven (chỉ đẩy đơn bot ĐÃ có) → vô dụng vì bot không có đơn cũ.
+
+**Alternative đã loại:** ERP track per-order back-off (thừa — bot dùng last_synced_at); paginate full list g2g
+(vẫn thiếu vì list endpoint không trả đơn cũ); import `RateLimitError` từ g2g_api (làm module kéo curl_cffi,
+mất khả năng unit-test → thay bằng `_is_rate_limit` check `status==429`).
+
+**Eldo dispute parity (EL-2/EL-3):** eldo_sync push `disputed` kèm `report_reason=latestDispute.reason`
+(Eldo gộp cancel+dispute vào 1 state `Disputed`; classifier trong latestDispute, disputedByUserRole luôn=Buyer)
+→ ERP "Dispute Open" + reason. EL-3: đơn completed có cờ `hasBeenRefundedPostCompletion` → push canceled →
+ERP đảo ví (belt-and-suspenders; hiện=0). ERP side (EL-1 clear-on-resolve + E-1 endpoint): gege_custom
+`feat/g2g-reconcile-eldo-dispute`. Test `tests/test_erp_reconcile.py` 3/3 (basic/backoff/rate-limit).
+Config: `shared/config.py` ERP_RECONCILE_*. Deploy ERP TRƯỚC → bot.
+
+---
+
 ## 2026-06-26 — G2G cancel/resolution: push alert NON-BLOCKING + ERP tự quyết tiền/state
 
 **Quyết định:** `status_sync/g2g_sync.py::_sync_cases` phân loại G2G case theo `report_case`

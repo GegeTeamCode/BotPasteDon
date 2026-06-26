@@ -2,7 +2,17 @@
 
 > Section mới nhất ở trên cùng. Phần cũ giữ nguyên bên dưới làm lịch sử.
 
-## 2026-06-26 — G2G cancel/resolution alert (CODE XONG, chờ deploy)
+## 2026-06-26 — ERP-driven reconcile + Eldo dispute parity (CODE XONG, chờ commit+deploy)
+
+- **ERP-driven reconcile** (đóng lỗ hổng g2g list-window, prod ~578 đơn kẹt): `status_sync/erp_reconcile.py`
+  gọi ERP `get_pending_marketplace_orders` → lookup per-order → push terminal. Cadence mỗi N cycle (g2g_sync).
+  Config `ERP_RECONCILE_*` (every_n=4, batch=150, throttle=0.4s, backoff=12h). `erp_client.get_pending_orders`.
+- **Eldo dispute parity:** EL-2 (eldo_sync đẩy `latestDispute.reason`), EL-3 (cờ hasBeenRefundedPostCompletion→canceled).
+- ERP side: gege_custom `feat/g2g-reconcile-eldo-dispute` (EL-1 clear-on-resolve no_change + E-1 endpoint). **ERP đã commit `fe67705`, chưa push.**
+- Test `tests/test_erp_reconcile.py` 3/3. **CÒN: commit bot + push + PR ERP→develop→main→deploy ERP TRƯỚC → bot `deploy_git.py status_sync`.**
+- Plan: `.ai/current-plan.md`. Sau deploy: theo dõi log `erp_reconcile: completed=X cancelled=Y skip=Z` drain 578 đơn.
+
+## 2026-06-26 — G2G cancel/resolution alert (ĐÃ DEPLOY prod b16edfd)
 
 - **Cụm "G2G cancel/resolution → ERP"** — cấu phần BOT: push alert cancel-request/dispute cho ERP.
   Plan: [`current-plan.md`](./current-plan.md). Master: [`../../frappe-erp15-gegecurrency/.ai/current-plan.md`](../../frappe-erp15-gegecurrency/.ai/current-plan.md).

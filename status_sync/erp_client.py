@@ -80,3 +80,37 @@ class ERPClient:
             platform, ext_id, max_retries, last_err,
         )
         return False
+
+    async def get_pending_orders(self, platform: str, limit: int = 200) -> list:
+        """GET ERP's non-terminal marketplace orders (ERP-driven reconcile).
+
+        Returns a list of dicts [{name, external_order_id, workflow_state, order_date}].
+        Empty list on any failure (incl. 404 if ERP not yet deployed) — safe no-op.
+        """
+        from shared.config import ERP_PENDING_ORDERS_URL
+
+        if not ERP_PENDING_ORDERS_URL:
+            logger.error("ERP_PENDING_ORDERS_URL not configured")
+            return []
+        headers = {"X-API-Key": self._key(platform)}
+        params = {"platform": platform, "limit": str(limit)}
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(
+                    ERP_PENDING_ORDERS_URL, params=params, headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
+                ) as resp:
+                    body = await resp.text()
+                    if 200 <= resp.status < 300:
+                        j = json.loads(body)
+                        # Frappe wraps a whitelisted return in {"message": <value>}.
+                        msg = j.get("message", j) if isinstance(j, dict) else j
+                        orders = (msg or {}).get("orders", []) if isinstance(msg, dict) else []
+                        logger.info("ERP pending %s: %d orders", platform, len(orders))
+                        return orders
+                    logger.warning("get_pending_orders %s HTTP %d: %s",
+                                   platform, resp.status, body[:200])
+                    return []
+        except Exception as e:
+            logger.warning("get_pending_orders %s failed: %s", platform, e)
+            return []

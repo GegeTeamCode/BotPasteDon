@@ -7,7 +7,19 @@ mới nhất ở trên cùng.
 
 ## 2026-06-26
 
-- `feat(status_sync): G2G cancel/resolution alert ON/OFF + report_case classify` — **CODE XONG (py_compile OK), chờ commit+deploy**
+- `feat(status_sync): ERP-driven reconcile + eldo dispute parity` — **CODE XONG, test 3/3, chờ commit+deploy**
+  - **ERP-driven reconcile** (đóng lỗ hổng g2g list-window, prod ~578 đơn kẹt): `erp_reconcile.py::reconcile_from_erp`
+    gọi ERP `get_pending_marketplace_orders` → lookup `get_order_detail` per-order → push terminal. Throttle+batch+
+    back-off (last_synced_at)+dừng-429. Cadence mỗi N cycle trong g2g_sync. `erp_client.get_pending_orders` +
+    config `ERP_RECONCILE_*`. `reconcile_unpushed` cũ giữ nguyên (bot-driven, vẫn dùng).
+  - **Eldo dispute parity:** EL-2 eldo_sync push `disputed` kèm `report_reason=latestDispute.reason` (Eldo gộp
+    cancel+dispute vào 1 state Disputed; classifier trong latestDispute); EL-3 cờ `hasBeenRefundedPostCompletion`
+    → push canceled (đảo ví, belt-and-suspenders, hiện=0).
+  - Test `tests/test_erp_reconcile.py` 3/3 (basic/backoff/rate-limit), ruff clean. ERP side: gege_custom
+    `feat/g2g-reconcile-eldo-dispute` (EL-1 clear-on-resolve + E-1 endpoint, test 10/10, app 122/122).
+  - Deploy SAU ERP. `deploy_git.py status_sync`.
+
+- `feat(status_sync): G2G cancel/resolution alert ON/OFF + report_case classify` — **ĐÃ DEPLOY prod `b16edfd`**
   - Cấu phần BOT của cụm "G2G cancel/resolution → ERP" (ERP đã commit `23a6ad4`, test 8/8 + 120/120).
   - `_sync_cases` rewrite: phân loại `report_case` (`cancel`→`cancel_requested`, còn lại→`disputed`);
     push **alert ON** khi case `open`/`escalate` + chưa alert, **OFF** khi `close` + đang alert;

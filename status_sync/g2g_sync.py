@@ -11,7 +11,14 @@ from shared.logging_config import setup_logger
 
 from status_sync.erp_client import ERPClient
 from status_sync.reconcile import reconcile_unpushed
-from shared.config import ERP_GO_LIVE_MS
+from status_sync.erp_reconcile import reconcile_from_erp
+from shared.config import (
+    ERP_GO_LIVE_MS,
+    ERP_RECONCILE_BATCH,
+    ERP_RECONCILE_BACKOFF_H,
+    ERP_RECONCILE_EVERY_N_CYCLES,
+    ERP_RECONCILE_THROTTLE_SEC,
+)
 
 logger = setup_logger("status_sync.g2g")
 
@@ -51,6 +58,7 @@ class G2GSync:
         self.auth_mgr = auth_mgr or G2GAuthManager()
         self.api = G2GAPIClient(self.auth_mgr)
         self.platform = "g2g"
+        self._cycle = 0  # drives the ERP-driven reconcile cadence
 
     async def run_once(self) -> None:
         # Reconcile orphaned terminal pushes first — independent of marketplace
@@ -103,11 +111,26 @@ class G2GSync:
         # 3. Dispute cases (small list, fetch every cycle)
         await self._sync_cases(auth, push=not is_first_run)
 
-        # 4. Persist counts snapshot
+        # 4. ERP-driven reconcile (heavy: per-order lookups) — every N cycles, not first run.
+        if not is_first_run and self._cycle % ERP_RECONCILE_EVERY_N_CYCLES == 0:
+            await self._run_erp_reconcile(auth)
+        self._cycle += 1
+
+        # 5. Persist counts snapshot
         snapshot = {k: int(counts[k]) for k in counts if isinstance(counts.get(k), int)}
         if counts.get("last_order_completed_at"):
             snapshot["__last_completed_at__"] = int(counts["last_order_completed_at"])
         self.db.set_marketplace_state_counts(self.platform, snapshot)
+
+    async def _run_erp_reconcile(self, auth) -> None:
+        try:
+            await reconcile_from_erp(
+                self.db, self.erp, self.api, auth, self.platform,
+                batch=ERP_RECONCILE_BATCH, throttle=ERP_RECONCILE_THROTTLE_SEC,
+                backoff_h=ERP_RECONCILE_BACKOFF_H,
+            )
+        except Exception as e:
+            logger.warning("erp_reconcile failed: %s", e)
 
     async def _reconcile_state(self, auth, state: str, push: bool) -> None:
         loop = asyncio.get_running_loop()

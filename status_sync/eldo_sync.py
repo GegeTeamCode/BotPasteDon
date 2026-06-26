@@ -110,6 +110,13 @@ class EldoSync:
                 if not order_id:
                     continue
                 mp_state = state.lower()
+                # EL-3 (refund-after-completed): a completed order carrying the
+                # post-completion-refund flag → treat as cancelled so ERP reverses the
+                # wallet credit. The reliable path is the order moving to Canceled (caught
+                # by the canceled count tripwire → cancelled → reverse); this is a
+                # belt-and-suspenders for the rare case the state stays Completed.
+                if mp_state == "completed" and order.get("hasBeenRefundedPostCompletion"):
+                    mp_state = "canceled"
                 # Eldo uses ISO datetime; if order has lastStateChangeDate prefer it
                 state_at = order.get("lastStateChangeDate") or order.get("createdDate")
                 raw_json = json.dumps(order, ensure_ascii=False, default=str)
@@ -129,6 +136,14 @@ class EldoSync:
                         "marketplace_state_at": state_at,
                         "raw_payload": order,
                     }
+                    if mp_state == "disputed":
+                        # EL-2: Eldo dispute is an order state; intent lives in
+                        # latestDispute. No cancel/dispute split (g2g has report_case) —
+                        # always "Dispute Open" + reason → Order Log. ERP clears the alert
+                        # when the order later resolves to any non-alert state (gap a).
+                        ld = order.get("latestDispute") or {}
+                        payload["alert"] = True
+                        payload["report_reason"] = ld.get("reason")
                     ok = await self.erp.push_status_update(payload)
                     self.db.mark_marketplace_pushed(self.platform, order_id, ok)
                     consecutive_known = 0

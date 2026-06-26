@@ -45,6 +45,18 @@ STATUS_SYNC_INTERVAL_SEC = int(os.getenv("STATUS_SYNC_INTERVAL_SEC", "1800"))  #
 ERP_GO_LIVE_ISO = os.getenv("ERP_GO_LIVE_ISO", "2026-05-29")
 ERP_GO_LIVE_MS = int(os.getenv("ERP_GO_LIVE_MS", "1779926400000"))  # 2026-05-29T00:00:00Z
 
+# ── ERP-driven reconcile (closes the g2g list-window gap) ──
+# ERP returns its non-terminal marketplace orders; the bot looks each up on the
+# marketplace and pushes the real terminal state. URL derived from ERP_WEBHOOK_URL.
+ERP_PENDING_ORDERS_URL = os.getenv("ERP_PENDING_ORDERS_URL", "")
+if not ERP_PENDING_ORDERS_URL and ERP_WEBHOOK_URL:
+    ERP_PENDING_ORDERS_URL = ERP_WEBHOOK_URL.rsplit(".", 1)[0] + ".get_pending_marketplace_orders"
+# Run the ERP-driven reconcile every N status_sync cycles (heavy: per-order lookups).
+ERP_RECONCILE_EVERY_N_CYCLES = int(os.getenv("ERP_RECONCILE_EVERY_N_CYCLES", "4"))  # ~2h @30m
+ERP_RECONCILE_BATCH = int(os.getenv("ERP_RECONCILE_BATCH", "150"))  # max lookups per run
+ERP_RECONCILE_THROTTLE_SEC = float(os.getenv("ERP_RECONCILE_THROTTLE_SEC", "0.4"))  # between lookups
+ERP_RECONCILE_BACKOFF_H = int(os.getenv("ERP_RECONCILE_BACKOFF_H", "12"))  # re-check still-pending after
+
 # ── Chrome / Selenium ──
 CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH", "")
 HEADLESS_MODE = os.getenv("HEADLESS_MODE", "false").lower() in ("true", "1", "yes")
