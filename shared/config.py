@@ -51,8 +51,10 @@ ERP_GO_LIVE_MS = int(os.getenv("ERP_GO_LIVE_MS", "1779926400000"))  # 2026-05-29
 ERP_PENDING_ORDERS_URL = os.getenv("ERP_PENDING_ORDERS_URL", "")
 if not ERP_PENDING_ORDERS_URL and ERP_WEBHOOK_URL:
     ERP_PENDING_ORDERS_URL = ERP_WEBHOOK_URL.rsplit(".", 1)[0] + ".get_pending_marketplace_orders"
-# Run the ERP-driven reconcile every N status_sync cycles (heavy: per-order lookups).
-ERP_RECONCILE_EVERY_N_CYCLES = int(os.getenv("ERP_RECONCILE_EVERY_N_CYCLES", "4"))  # ~2h @30m
+# Run the ERP-driven reconcile every N status_sync cycles. 1 = every cycle (~30m).
+# Safe at every cycle: the 12h back-off skips orders still delivering, so steady-state
+# only looks up genuinely-new pending orders (~150-lookup batch ≈ 60s of work).
+ERP_RECONCILE_EVERY_N_CYCLES = int(os.getenv("ERP_RECONCILE_EVERY_N_CYCLES", "1"))  # every cycle
 ERP_RECONCILE_BATCH = int(os.getenv("ERP_RECONCILE_BATCH", "150"))  # max lookups per run
 ERP_RECONCILE_THROTTLE_SEC = float(os.getenv("ERP_RECONCILE_THROTTLE_SEC", "0.4"))  # between lookups
 ERP_RECONCILE_BACKOFF_H = int(os.getenv("ERP_RECONCILE_BACKOFF_H", "12"))  # re-check still-pending after
