@@ -89,13 +89,17 @@ DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8766"))
 # ── Scanner Configuration ──
 SCANNER_CONFIG = {
     "auto_start": True,
-    "whitelist": os.getenv(
-        "SCANNER_WHITELIST",
-        "Divine Orb, Chaos Orb, Exalted Orb, Mirror of Kalandra, Gold, Boss Materials, Runes, Currency, Gems, Flawless Horadric, Items, Husk, Lair Key, Crux, Key",
-    ),
+    # Keyword filter (blacklist-first, then whitelist). See docs/order_filtering.md.
+    # Changed 2026-06-27: INVERTED to allow-all. We now paste EVERYTHING to ERP except
+    # the bulk/placeholder gear listings worker can't fulfil ("Any Gears", "Any Items -
+    # Aspects") + service spam (Boosting/Leveling/Account/Custom oder). Specific gear
+    # (Mageblood, Headhunter...) now flows to ERP for hand delivery.
+    # whitelist empty => check_keywords skips the whitelist block => allow-all.
+    # Set SCANNER_WHITELIST to re-enable the old "only allow listed currency" mode.
+    "whitelist": os.getenv("SCANNER_WHITELIST", ""),
     "blacklist": os.getenv(
         "SCANNER_BLACKLIST",
-        "Boosting, Leveling, Account, Custom oder",
+        "Any Gears, Any Items - Aspects, Boosting, Leveling, Account, Custom oder",
     ),
     "G2G_TITLE_MAP": [
         {

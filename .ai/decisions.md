@@ -5,6 +5,51 @@ Mới nhất ở trên cùng.
 
 ---
 
+## 2026-06-27 — Đảo scanner filter sang allow-all (gear giờ lọt ERP)
+
+**Quyết định:** Đổi [`SCANNER_WHITELIST`](../shared/config.py) sang **rỗng** + blacklist
+= `Any Gears, Any Items - Aspects, Boosting, Leveling, Account, Custom oder`. Nghĩa là
+filter bị **đảo** từ "chỉ cho phép whitelist" sang **"chặn blacklist, cho phép tất cả
+còn lại"**. Lý do: owner muốn **gear cụ thể** (Mageblood Utility Belt, Headhunter,
+Temporalis, Widow's Web…) giờ được paste sang ERP để trader **giao tay** — trước đó
+chúng bị whitelist drop ngay ở scanner (`status=DETECTED`, không vào ERP). Hai pattern
+`Any Gears` / `Any Items - Aspects` vẫn bị chặn vì là listing "any/bulk" mà worker
+không fulfil được (không item cụ thể → sẽ tạo ERP Sell Order rồi kẹt giao).
+
+**Ngữ cảnh:** Đơn `1782433314325QBNQ` (Mageblood Utility Belt) điều tra thấy `DETECTED`
+trong DB, `raw_data` chỉ `{"itemName": ...}`, `game=''` — dấu hiệu chuẩn của đơn rớt
+whitelist ở `scan_order_list` (chưa qua `_map_order_data`). Audit 2026-06-25 đã liệt
+32 đơn DETECTED tương tự; ~27 rớt whitelist (gear), 5 dính blacklist `Any Items`. Cùng
+dấu vân tay.
+
+**Alternative đã loại:**
+- *Thêm tên từng loại gear vào whitelist* (Mageblood, Headhunter…): mỏng, bỏ sót mỗi
+  loại gear mới, phải maintain liên tục. Allow-all đơn giản hơn.
+- *Bỏ hẳn cả Boosting/Leveling/Account khỏi blacklist*: tạo ERP Sell Order rác cho dịch
+  vụ team không làm. Giữ lại (chốt owner).
+
+**Cơ chế (không đổi code, chỉ config):** [`check_keywords`](../scanners/base_scanner.py)
+chạy **blacklist trước, whitelist sau**. Whitelist rỗng → skip block whitelist →
+allow-all. Deploy: edit `.env` trên `.220` (gitignored runtime state — `deploy_git.py`
+git reset không đụng) → restart 2 scanner (watchdog-safe). `.env` backup
+`.env.bak-20260627-020841`.
+
+**Verify** (`scripts/_verify_filter.py`, chạy trên `.220` nạp config thật): 10/10 case
+đúng — DROP `Any Gears`/`Any Items - Aspects`/`Boosting`/`Account`; PASTE Mageblood/
+Headhunter/Temporalis/Widow's Web/Divine/Gold.
+
+**Tác động G2G:** mọi đơn qua filter sẽ bị scanner gọi `start_deliver` +
+`mark_as_delivering` (lấy delivery info) → đơn gear chuyển sang `delivering` trên G2G,
+trader phải claim + giao tay + upload proof. Eldorado không start_deliver (chỉ get
+detail) nên an toàn hơn. Đơn DETECTED cũ (đã xử lý riêng theo owner) **không** tự
+re-paste — `is_order_processed` cache theo order_id bất kể status.
+
+**Doc:** [`docs/order_filtering.md`](../docs/order_filtering.md) cập nhật (TL;DR +
+config table + section mới "Phương thức filter mới"). Defaults repo (`shared/config.py`,
+`.env.example`) đồng bộ theo ý định mới.
+
+---
+
 ## 2026-06-26 — ERP-driven reconcile (lỗ hổng g2g list-window) + Eldo dispute parity
 
 **Quyết định:** Thêm `status_sync/erp_reconcile.py::reconcile_from_erp` — gọi ERP endpoint

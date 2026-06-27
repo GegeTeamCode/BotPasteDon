@@ -15,6 +15,13 @@ Whitelist = chỉ hàng bot **tự giao được** (currency / gold / runes / ge
 Gear / unique / account / boosting là **giao tay, ngoài phạm vi bot** → không vào
 ERP là đúng thiết kế.
 
+> **⚠️ Thay đổi 2026-06-27:** filter bị **đảo ngược** sang **allow-all** (whitelist
+> rỗng). Giờ **mọi đơn** đều được paste sang ERP, **trừ** các listing bulk/placeholder
+> mà worker không fulfil được (`Any Gears`, `Any Items - Aspects`) + dịch vụ rác
+> (`Boosting/Leveling/Account/Custom oder`). Mục đích: gear cụ thể (Mageblood,
+> Headhunter, Temporalis…) giờ vào ERP để trader giao tay. Xem chi tiết ở cuối file
+> ("Phương thức filter mới — allow-all").
+
 ## Cơ chế lọc (vị trí trong code)
 
 Lọc xảy ra ở **scanner**, KHÔNG phải ở webhook matching.
@@ -58,10 +65,17 @@ Thứ tự: **blacklist trước, whitelist sau**. Khớp theo *substring* (khô
 
 ### 3. Config — `.env` trên server (.220)
 
+**Hiện tại (từ 2026-06-27 — allow-all):**
+
 | Biến | Giá trị hiện tại |
 |------|------------------|
-| `SCANNER_WHITELIST` | `Divine Orb, Chaos Orb, Mirror of Kalandra, Gold, Boss Materials, Runes, Currency, Gems, Flawless Horadric, Items` |
-| `SCANNER_BLACKLIST` | `Boosting, Leveling, Account, Custom oder, Any Items` |
+| `SCANNER_WHITELIST` | *(rỗng — allow-all)* |
+| `SCANNER_BLACKLIST` | `Any Gears, Any Items - Aspects, Boosting, Leveling, Account, Custom oder` |
+
+> Trước 2026-06-27 whitelist = `Divine Orb, Chaos Orb, ..., Items` và blacklist
+> thêm `Any Items` (chỉ cho phép currency/gold/gems, drop toàn bộ gear). Các đơn
+> DETECTED của đợt đó (vd `1782433314325QBNQ` — Mageblood) đã được xử lý riêng,
+> không cần re-paste.
 
 Nạp ở `shared/config.py` → `SCANNER_CONFIG["whitelist"]` / `["blacklist"]`
 (`os.getenv("SCANNER_WHITELIST" / "SCANNER_BLACKLIST")`).
@@ -110,3 +124,29 @@ Lý do thật là FILTER ở `scan_order_list` (mô tả trên).
 - Thêm một loại hàng vào whitelist = bot sẽ **tự cố giao** đơn đó. Chỉ thêm khi worker
   thực sự giao được loại hàng đó, nếu không sẽ tạo đơn ERP rồi kẹt ở khâu giao.
 - Đổi `.env` xong phải restart scanner (`deploy_git.py` hoặc restart service) để nạp lại.
+
+## Phương thức filter mới — allow-all (2026-06-27)
+
+Từ 2026-06-27 filter bị **đảo**: thay vì "chỉ cho phép whitelist" thì giờ là
+**"chặn blacklist, cho phép tất cả còn lại"**.
+
+| Mode | `SCANNER_WHITELIST` | `SCANNER_BLACKLIST` | Hành vi |
+|------|---------------------|---------------------|---------|
+| **Cũ** (trước 06-27) | `Divine Orb, ..., Items` | `Boosting, ..., Any Items` | Chỉ currency/gold/gems/runes lọt; **toàn bộ gear bị drop** (Mageblood, Headhunter…). |
+| **Mới** (hiện tại) | *(rỗng)* | `Any Gears, Any Items - Aspects, Boosting, Leveling, Account, Custom oder` | Mọi đơn lọt, trừ listing bulk gear (`Any Gears`, `Any Items - Aspects`) + dịch vụ rác. |
+
+**Tại sao:** owner muốn gear cụ thể (Mageblood Utility Belt, Headhunter, Temporalis…)
+vào ERP để trader **giao tay**. Hai pattern bị chặn vì là "any/bulk" listing mà worker
+không fulfil được — nếu cho lọt sẽ tạo ERP Sell Order rồi kẹt (không có item cụ thể).
+
+**Verify** (script `scripts/_verify_filter.py`, chạy trên `.220`): 10/10 case đúng —
+`Any Gears`/`Any Items - Aspects`/`Boosting`/`Account` DROP; Mageblood/Headhunter/
+Temporalis/Widow's Web/Divine/Gold PASTE.
+
+> ⚠️ **Tác động G2G**: mọi đơn qua filter sẽ bị scanner gọi `start_deliver` +
+> `mark_as_delivering` (để lấy delivery info) → đơn gear chuyển sang `delivering`
+> trên G2G và phải được trader claim+giao tay. Eldorado **không** start_deliver
+> (chỉ get detail) nên an toàn hơn cho gear.
+
+**Quay lại mode cũ:** set `SCANNER_WHITELIST=Divine Orb, ...` + giữ blacklist, restart
+scanner. Whitelist rỗng = allow-all (xem [`check_keywords`](../scanners/base_scanner.py)).
