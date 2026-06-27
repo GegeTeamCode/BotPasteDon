@@ -30,6 +30,15 @@ ERP_API_KEY = os.getenv("ERP_API_KEY", "")
 ERP_API_KEY_ELDO = os.getenv("ERP_API_KEY_ELDO", "") or ERP_API_KEY
 ERP_API_KEY_G2G = os.getenv("ERP_API_KEY_G2G", "") or ERP_API_KEY
 
+# ── Manual paste (ERP-triggered, on-demand) ──
+# ERP (.100) POSTs {order_id} here to paste ONE specific marketplace order on
+# demand — bypassing the scanner keyword filter. Each scanner process exposes its
+# own port (G2G / Eldorado). Secret is a shared header check (X-Manual-Secret).
+# See docs/manual_paste.md.
+MANUAL_PASTE_SECRET = os.getenv("MANUAL_PASTE_SECRET", "")
+MANUAL_PASTE_PORT_G2G = int(os.getenv("MANUAL_PASTE_PORT_G2G", "8771"))
+MANUAL_PASTE_PORT_ELDO = int(os.getenv("MANUAL_PASTE_PORT_ELDO", "8772"))
+
 # ── status_sync ──
 # URL for marketplace state update endpoint on ERP (defaults derived from ERP_WEBHOOK_URL)
 ERP_STATUS_UPDATE_URL = os.getenv("ERP_STATUS_UPDATE_URL", "")

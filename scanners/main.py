@@ -7,10 +7,15 @@ import random
 import signal
 import sys
 
+import json
+
+from aiohttp import web
+
 from shared.config import (
     SCANNER_CONFIG, CHROME_BINARY_PATH, HEADLESS_MODE, DATABASE_PATH,
     G2G_USE_API, AUTH_SERVICE_URL, ELDO_USE_API,
     ERP_WEBHOOK_URL, ERP_API_KEY_ELDO, ERP_API_KEY_G2G,
+    MANUAL_PASTE_SECRET, MANUAL_PASTE_PORT_G2G, MANUAL_PASTE_PORT_ELDO,
 )
 from shared.database import Database
 from shared.driver_manager import get_driver
@@ -22,7 +27,7 @@ from scanners.eldorado_scanner import EldoradoScanner
 from scanners.eldorado_scanner_api import EldoradoAPIScanner
 from scanners.g2g_scanner import G2GScanner
 from scanners.g2g_scanner_api import G2GAPIScanner, NotReadyError, DetailFetchError
-from scanners.base_scanner import shutdown_executor
+from scanners.base_scanner import normalize_id, shutdown_executor
 
 logger = setup_logger("scanner.main")
 
@@ -70,6 +75,127 @@ async def send_order_webhook(order_data: dict, platform: str) -> bool:
 
     return discord_ok
 
+
+# ── Manual paste (ERP-triggered, on-demand) ─────────────────────────────────
+#
+# Same extract+push path as the scanner, but for ONE explicit order_id and
+# WITHOUT the keyword filter (check_keywords is never called here). Lets the
+# owner pull a specific gear/custom order into ERP that the allow-all blacklist
+# would otherwise drop ("Any Gears", "Any Items - Aspects").
+
+async def handle_manual_paste(scanner, platform: str, db, order_id: str) -> dict:
+    """Fetch one order by external id, then push it to ERP like the scanner.
+
+    Returns a dict: {"status": "ok"|"error", "order_id": ..., "error"?: msg}.
+    For G2G this calls start_deliver+mark_as_delivering (order moves to
+    'delivering' on G2G → trader must hand-deliver) exactly like a scan.
+    """
+    order_id = normalize_id(str(order_id)) or ""
+    if not order_id:
+        return {"status": "error", "error": "order_id rỗng/không hợp lệ"}
+
+    # 1. Fetch + map via the same scanner code paths.
+    try:
+        if platform == "g2g":
+            order_info = {
+                "id": order_id,
+                "api_id": order_id,
+                "url": f"https://www.g2g.com/g2g-user/sale/order/item/{order_id}",
+            }
+            # _extract_with_auth_retry surfaces NotReady/DetailFetch so we can
+            # give a precise reason instead of the scanner's silent None.
+            order_data = await scanner._extract_with_auth_retry(order_info)
+        else:  # eldorado — get_order_detail takes the order_id directly
+            order_data = await scanner.extract_order_data({"id": order_id, "raw": {}})
+    except NotReadyError as e:
+        st = getattr(e, "status", "") or "chưa delivering"
+        return {"status": "error", "order_id": order_id,
+                "error": f"Đơn G2G chưa ở trạng thái giao được ({st}) — không lấy được thông tin giao. Thử lại khi buyer đã thanh toán."}
+    except DetailFetchError:
+        return {"status": "error", "order_id": order_id,
+                "error": "G2G trả thông tin đơn không đọc được — thử lại sau ít phút."}
+    except Exception as e:
+        logger.error("manual paste %s/%s fetch error: %s", platform, order_id, e)
+        return {"status": "error", "order_id": order_id,
+                "error": f"Lỗi fetch {platform}: {e}"}
+
+    if not order_data:
+        return {"status": "error", "order_id": order_id,
+                "error": "Không lấy được dữ liệu đơn (ID sai, đơn không tồn tại, hoặc chưa đọc được)."}
+
+    # 2. Track in DB with the FULL raw_data (insert may be a no-op if the order
+    #    was already recorded DETECTED by a prior filtered scan — force-refresh
+    #    raw_data so erp_retry_loop has real data, mirroring recovery_loop).
+    db.insert_order(platform, order_id, order_data)
+    db.update_order_status(
+        order_id, ORDER_NOTIFIED,
+        item_name=order_data.get("itemName", ""),
+        game=order_data.get("game", ""),
+        server=order_data.get("server", ""),
+        quantity=order_data.get("quantity", ""),
+        customer_name=order_data.get("customerName", ""),
+        order_url=order_data.get("url", ""),
+        raw_data=json.dumps(order_data, ensure_ascii=False),
+    )
+
+    # 3. Push to ERP (authoritative). send_erp_webhook returns True on ok OR
+    #    duplicate; the ERP side dedupes by external_order_id. On failure we
+    #    leave erp_synced=0 so erp_retry_loop keeps retrying.
+    erp_key = ERP_API_KEY_ELDO if platform == "eldorado" else ERP_API_KEY_G2G
+    if not (ERP_WEBHOOK_URL and erp_key):
+        return {"status": "error", "order_id": order_id,
+                "error": "ERP webhook chưa cấu hình trên bot"}
+    claimed = bool(db.claim_erp_order(order_id))
+    try:
+        erp_ok = await send_erp_webhook(order_data, ERP_WEBHOOK_URL, erp_key)
+    except Exception as e:
+        erp_ok = False
+        logger.error("manual paste %s ERP push error: %s", order_id, e)
+    if erp_ok:
+        db.mark_erp_synced(order_id)
+        logger.info("manual paste OK: %s/%s", platform, order_id)
+        return {"status": "ok", "order_id": order_id,
+                "item_name": order_data.get("itemName", "")}
+    if claimed:
+        db.release_erp_order(order_id)
+    return {"status": "error", "order_id": order_id,
+            "error": "ERP từ chối hoặc chưa tạo được đơn — sẽ tự retry, xem log bot."}
+
+
+async def start_manual_paste_server(scanner, platform: str, db):
+    """Expose POST /manual-paste on this scanner process so ERP can trigger an
+    on-demand paste. Bound 0.0.0.0; protected by the X-Manual-Secret header."""
+    port = MANUAL_PASTE_PORT_G2G if platform == "g2g" else MANUAL_PASTE_PORT_ELDO
+
+    async def handle(request: web.Request):
+        if MANUAL_PASTE_SECRET and request.headers.get("X-Manual-Secret") != MANUAL_PASTE_SECRET:
+            return web.json_response({"status": "error", "error": "unauthorized"}, status=401)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"status": "error", "error": "bad json body"}, status=400)
+        order_id = str(body.get("order_id") or "").strip()
+        if not order_id:
+            return web.json_response({"status": "error", "error": "missing order_id"}, status=400)
+        logger.info("manual paste request: %s/%s", platform, order_id)
+        result = await handle_manual_paste(scanner, platform, db, order_id)
+        status = 200 if result.get("status") == "ok" else 422
+        return web.json_response(result, status=status)
+
+    async def health(request: web.Request):
+        return web.json_response({"ok": True, "platform": platform})
+
+    app = web.Application()
+    app.router.add_post("/manual-paste", handle)
+    app.router.add_get("/manual-paste/health", health)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info("Manual-paste endpoint listening on 0.0.0.0:%d (%s)", port, platform)
+    # Keep the runner alive until shutdown, then clean up the socket.
+    await _shutdown_event.wait()
+    await runner.cleanup()
 
 
 async def erp_retry_loop(platform: str):
@@ -230,6 +356,7 @@ async def run_scanner(platform: str):
         asyncio.create_task(heartbeat())
         asyncio.create_task(erp_retry_loop(platform))
         asyncio.create_task(recovery_loop())
+        asyncio.create_task(start_manual_paste_server(scanner, platform, db))
         scan_task = asyncio.create_task(api_scan_loop())
 
         logger.info(f"G2G API Scanner running (PID: {os.getpid()})")
@@ -280,6 +407,7 @@ async def run_scanner(platform: str):
 
         asyncio.create_task(heartbeat())
         asyncio.create_task(erp_retry_loop(platform))
+        asyncio.create_task(start_manual_paste_server(scanner, platform, db))
         scan_task = asyncio.create_task(api_scan_loop())
 
         logger.info(f"Eldorado API Scanner running (PID: {os.getpid()})")
