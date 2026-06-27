@@ -7,6 +7,7 @@ Falls back to Selenium G2GScanner on API failure.
 
 import asyncio
 import logging
+import re
 from typing import Optional, Dict, List
 from functools import partial
 
@@ -241,6 +242,49 @@ class G2GAPIScanner:
             except Exception:
                 pass
             await asyncio.sleep(5)
+        return None
+
+    async def resolve_order_item_id(self, entered_id: str) -> Optional[str]:
+        """Find the real G2G order_item_id from a user-entered external id.
+
+        The id a seller sees / copies has the item index suffix stripped — the
+        API order_item_id is e.g. '1782...-1' but the display id is '1782...'
+        (see _map_order_data). Manual paste receives the display id, so probe
+        get_order_detail on both forms and return the canonical order_item_id the
+        API reports. READ-ONLY (no start_deliver) so it is safe for orders that
+        are already delivering. Returns None if neither form exists.
+        """
+        auth = await self.auth_mgr.get_auth()
+        loop = asyncio.get_running_loop()
+        sid = self._seller_id or getattr(auth, "seller_id", "") or ""
+
+        e = (entered_id or "").strip()
+        candidates = [e]
+        m = re.match(r"^(.*)-\d+$", e)
+        if m:
+            candidates.append(m.group(1))   # user typed a suffix → also try the bare id
+        else:
+            candidates.append(f"{e}-1")     # display id → real item is usually <id>-1
+
+        seen = set()
+        for cand in candidates:
+            if not cand or cand in seen:
+                continue
+            seen.add(cand)
+            try:
+                d = await loop.run_in_executor(
+                    None, self.api.get_order_detail, cand, auth, sid)
+            except AuthError:
+                raise
+            except Exception as ex:
+                logger.info("resolve %s: candidate %s not found (%s)",
+                            e, cand, str(ex)[:80])
+                continue
+            if d and (d.get("order_item_id") or d.get("order_id")):
+                resolved = str(d.get("order_item_id") or d.get("order_id"))
+                logger.info("resolve %s -> order_item_id=%s (status=%s)",
+                            e, resolved, d.get("order_item_status"))
+                return resolved
         return None
 
     async def _do_extract(self, api_id: str, order_id: str,

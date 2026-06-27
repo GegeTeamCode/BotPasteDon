@@ -97,10 +97,18 @@ async def handle_manual_paste(scanner, platform: str, db, order_id: str) -> dict
     # 1. Fetch + map via the same scanner code paths.
     try:
         if platform == "g2g":
+            # The display id (what the seller copies) has the item suffix
+            # stripped; the API needs the real order_item_id (often <id>-1).
+            # Resolve it first (read-only) so BOTH a brand-new order (then
+            # start_deliver) and one already delivering (read straight) work.
+            resolved = await scanner.resolve_order_item_id(order_id)
+            if not resolved:
+                return {"status": "error", "order_id": order_id,
+                        "error": "Không tìm thấy đơn G2G với ID này (đã thử cả dạng có và không có hậu tố -1). Kiểm tra lại External Order ID."}
             order_info = {
-                "id": order_id,
-                "api_id": order_id,
-                "url": f"https://www.g2g.com/g2g-user/sale/order/item/{order_id}",
+                "id": resolved,
+                "api_id": resolved,
+                "url": f"https://www.g2g.com/g2g-user/sale/order/item/{resolved}",
             }
             # _extract_with_auth_retry surfaces NotReady/DetailFetch so we can
             # give a precise reason instead of the scanner's silent None.
