@@ -26,9 +26,16 @@ Tab "Đơn G2G/Eldorado" (SPA /create, .100)
 `POST /manual-paste` body `{"order_id": "..."}`, header `X-Manual-Secret: <MANUAL_PASTE_SECRET>`.
 Trả `200 {status:ok,...}` hoặc `422 {status:error, error: "..."}` (401 nếu sai secret).
 
-External ID = đúng ID dùng cho live API:
-- G2G: `1782527850272QETO` (chính là `order_item_id`, fetch thẳng `/order/item/{id}`).
-- Eldorado: UUID `8a00381c-...` (`/orders/me/{id}`).
+External ID = ID hiển thị trên sàn:
+- G2G: `1782527850272QETO`. ⚠️ ID hiển thị đã **strip hậu tố item**; API `/order/item/{id}`
+  cần `order_item_id` thật = thường `<id>-1`. ID trần → 404 "order_item not found".
+  `resolve_order_item_id()` probe get_order_detail cả `<id>` lẫn `<id>-1` (read-only,
+  an toàn cho cả đơn đã delivering) → lấy id chuẩn rồi mới extract.
+- Eldorado: UUID `8a00381c-...` (`/orders/me/{id}`, không cần resolve).
+
+## Hai trường hợp đều chạy (sau fix 2026-06-27)
+- **Đơn mới (preparing)**: resolve id → `start_deliver`+`mark_as_delivering` → đơn chuyển `delivering` → push.
+- **Đơn đã delivering sẵn**: resolve id → `start_deliver` no-op (nuốt lỗi) → `get_order_detail` đọc `delivering` → push. (Gate chấp nhận `delivering/delivered/completed`.)
 
 ## Khác biệt 2 sàn
 - **Eldorado**: fetch thẳng theo order_id. Không đổi trạng thái đơn trên sàn.
