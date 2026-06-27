@@ -5,6 +5,40 @@ Mới nhất ở trên cùng.
 
 ---
 
+## 2026-06-27 — Manual paste endpoint (ERP chủ động paste 1 đơn theo ID)
+
+**Quyết định:** Mỗi scanner process (API mode) mở thêm HTTP listener
+`POST /manual-paste` (G2G `:8771`, Eldo `:8772`, bind 0.0.0.0, guard header
+`X-Manual-Secret`). ERP (.100) gọi vào để **paste 1 đơn cụ thể theo external order
+id, BỎ QUA bộ lọc keyword**. Lý do: filter allow-all vẫn chặn `Any Gears`/`Any Items
+- Aspects`/dịch vụ, nhưng owner đôi khi muốn ép 1 đơn gear/custom cụ thể vào ERP để
+trader giao tay — thay vì nới filter (tạo đơn rác hàng loạt), cho phép **chủ động từng ID**.
+
+**Cơ chế (tái dùng tối đa):** `handle_manual_paste()` dựng `order_info` rồi gọi đúng
+code path của scanner — G2G `_extract_with_auth_retry` (start_deliver + mark_as_delivering
++ gate order_item_status), Eldo `extract_order_data` (get_order_detail read-only) — rồi
+`send_erp_webhook` như scan thường. KHÔNG gọi `check_keywords` ⇒ không bị filter. Lưu
+raw_data đầy đủ + erp_synced để `erp_retry_loop` recover nếu ERP down; ERP `new_order`
+dedupe theo external_order_id ⇒ idempotent.
+
+**ID nhập = order_item_id của G2G** (`1782...QETO`) nên fetch thẳng `/order/item/{id}`,
+KHÔNG cần resolve. Eldo dùng UUID thẳng. (Verify: `_extract_order_id` ưu tiên
+`order_item_id`, đúng giá trị mà owner nhìn thấy/dùng cho live API.)
+
+**Alternative đã loại:**
+- *Nới filter cho gear*: tạo ERP Sell Order rác cho mọi đơn gear, kẹt giao. Manual từng ID kiểm soát hơn.
+- *Bot poll ERP (async queue)*: chịu được bot-down nhưng nhiều thành phần + không feedback tức thì. Owner chọn **đồng bộ** (chờ kết quả ngay).
+- *Đặt endpoint ở dashboard :8766*: dashboard không có scanner instance (auth/api/extract). Gắn trong scanner process là chỗ có sẵn mọi thứ.
+
+**Tác động:** G2G manual paste → đơn chuyển `delivering` trên sàn (trader giao tay) —
+giống scan. Eldo an toàn hơn (không start_deliver). Config `.env`:
+`MANUAL_PASTE_SECRET` + `MANUAL_PASTE_PORT_G2G/ELDO`. Phía ERP:
+`site_config.manual_paste {secret,g2g_url,eldo_url}` + method `request_manual_paste` +
+tab `/create`. Deploy đúng pipeline: bot main-direct (e0f8424), ERP `develop→PR→main`
+(frappe #88, UI #54) → `deploy_git.py prod`. Doc: [`docs/manual_paste.md`](../docs/manual_paste.md).
+
+---
+
 ## 2026-06-27 — Đảo scanner filter sang allow-all (gear giờ lọt ERP)
 
 **Quyết định:** Đổi [`SCANNER_WHITELIST`](../shared/config.py) sang **rỗng** + blacklist
