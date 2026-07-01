@@ -137,7 +137,9 @@ class G2GAPIScanner:
         except DetailFetchError as e:
             return self._handle_detail_failed(order_id, order_info, e)
 
-    async def _extract_with_auth_retry(self, order_info: dict) -> Optional[Dict]:
+    async def _extract_with_auth_retry(
+        self, order_info: dict, prefer_offer_title: bool = False
+    ) -> Optional[Dict]:
         """Fetch order detail → start deliver → mark delivering → re-fetch.
 
         On AuthError (401): invalidates JWT cache, waits for auth service to
@@ -159,7 +161,10 @@ class G2GAPIScanner:
 
         # Initial attempt (NotReady/DetailFetch bubble up to extract_order_data)
         try:
-            return await self._do_extract(api_id, order_id, order_info)
+            return await self._do_extract(
+                api_id, order_id, order_info,
+                prefer_offer_title=prefer_offer_title,
+            )
         except AuthError as e:
             logger.warning(
                 "Extract 401 for %s: %s — invalidating JWT, waiting for fresh one",
@@ -178,7 +183,10 @@ class G2GAPIScanner:
 
         logger.info("Got fresh JWT for %s, retrying extract", order_id)
         try:
-            return await self._do_extract(api_id, order_id, order_info)
+            return await self._do_extract(
+                api_id, order_id, order_info,
+                prefer_offer_title=prefer_offer_title,
+            )
         except AuthError as e:
             logger.error(
                 "Extract failed for %s even with fresh JWT: %s", order_id, e)
@@ -288,7 +296,8 @@ class G2GAPIScanner:
         return None
 
     async def _do_extract(self, api_id: str, order_id: str,
-                          order_info: dict) -> Optional[Dict]:
+                          order_info: dict,
+                          prefer_offer_title: bool = False) -> Optional[Dict]:
         """Best-effort transition to delivering, then GATE on the order's actual
         order_item_status read back from get_order_detail.
 
@@ -358,7 +367,11 @@ class G2GAPIScanner:
                 f"order_item_status={status!r} (not delivering) for {order_id}",
                 status=status)
 
-        return self._map_order_data(detail, order_info.get("url", ""))
+        return self._map_order_data(
+            detail,
+            order_info.get("url", ""),
+            prefer_offer_title=prefer_offer_title,
+        )
 
     def _extract_order_id(self, order: dict) -> Optional[str]:
         for key in ("order_item_id", "order_id", "id"):
@@ -367,7 +380,12 @@ class G2GAPIScanner:
                 return normalize_id(str(val))
         return None
 
-    def _map_order_data(self, raw: dict, fallback_url: str = "") -> dict:
+    def _map_order_data(
+        self,
+        raw: dict,
+        fallback_url: str = "",
+        prefer_offer_title: bool = False,
+    ) -> dict:
         """Map API response → same format as old bot (order_scanner.py)."""
         order_item_id = raw.get("order_item_id") or raw.get("order_id")
         if order_item_id:
@@ -451,13 +469,21 @@ class G2GAPIScanner:
             character = raw.get("buyer_username") or "Check Order"
 
         # Title mapping: override itemName when offer_title matches a pattern
-        offer_title = raw.get("offer_title") or ""
+        offer_title = (raw.get("offer_title") or "").strip()
         if offer_title:
             for rule in self.config.get("G2G_TITLE_MAP", []):
                 pattern = rule.get("title_pattern", "")
                 if pattern and pattern.lower() in offer_title.lower():
                     item_name = rule["display_name"]
                     break
+
+        # Manual paste is explicitly used for custom/bulk listings that traders
+        # fulfil by hand. Their exact listing title is the useful description;
+        # the generic G2G attributes (for example "Gear - Amulet") lose the
+        # requested build/aspect details. Automatic scans retain the historical
+        # mapped item name for inventory matching.
+        if prefer_offer_title and offer_title:
+            item_name = offer_title
 
         # Quantity: format with Vietnamese thousand separator (period)
         raw_qty = raw.get("purchased_qty") or raw.get("qty") or raw.get("quantity") or 1

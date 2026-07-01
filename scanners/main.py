@@ -112,7 +112,9 @@ async def handle_manual_paste(scanner, platform: str, db, order_id: str) -> dict
             }
             # _extract_with_auth_retry surfaces NotReady/DetailFetch so we can
             # give a precise reason instead of the scanner's silent None.
-            order_data = await scanner._extract_with_auth_retry(order_info)
+            order_data = await scanner._extract_with_auth_retry(
+                order_info, prefer_offer_title=True
+            )
         else:  # eldorado — get_order_detail takes the order_id directly
             order_data = await scanner.extract_order_data({"id": order_id, "raw": {}})
     except NotReadyError as e:

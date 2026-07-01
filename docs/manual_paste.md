@@ -43,6 +43,9 @@ External ID = ID hiển thị trên sàn:
   rồi GATE trên `order_item_status` thật. ⚠️ Đơn sẽ chuyển **`delivering`** trên G2G →
   **trader phải claim + giao tay + upload proof**. Nếu đơn chưa thanh toán/chưa
   delivering → trả lỗi "chưa ở trạng thái giao được", không tạo SO.
+- **Tên hàng G2G manual paste**: dùng nguyên `offer_title` để giữ đầy đủ mô tả
+  listing custom/bulk. Auto scanner vẫn dùng mapping thuộc tính (`Gear - Amulet`,
+  currency, material...) để không đổi hành vi inventory hiện tại.
 
 ## Idempotency
 - ERP `new_order` dedupe theo `external_order_id` → bấm 2 lần không tạo 2 SO (trả `duplicate`, bot coi là ok).
