@@ -317,6 +317,27 @@ async def _qty_already_delivered(api_id: str, qty: int, auth) -> bool:
     return delivered >= qty
 
 
+async def _undelivered_qty(api_id: str, auth):
+    """Qty còn phải giao trên G2G = purchased - delivered - in_prog, hoặc None nếu
+    không đọc được / đơn đã terminal. Dùng để phục hồi khi submit_delivered_qty bị
+    G2G từ chối 'deliver more than undelivered quantity' — xảy ra với đơn giao TỪNG
+    PHẦN (trader đã giao tay một phần trước): ta submit đúng phần còn lại thay vì gửi
+    trọn order_quantity."""
+    try:
+        detail = await api_client.call_with_retry(
+            api_client.get_order_detail, api_id, auth, auth.seller_id)
+    except Exception as e:
+        logger.warning(f"[{api_id}] cannot read undelivered_qty: {e}")
+        return None
+    status = str(detail.get("order_item_status") or "").lower()
+    if status in ("cancelled", "canceled", "refunded", "cancellation_requested"):
+        return None
+    purchased = int(detail.get("purchased_qty") or 0)
+    delivered = int(detail.get("delivered_qty") or 0)
+    in_prog = int(detail.get("in_prog_qty") or 0)
+    return max(purchased - delivered - in_prog, 0)
+
+
 async def handle_g2g_api(order_id: str, task_data: dict):
     """Delivery via REST API — runs steps individually to track progress."""
     import re
@@ -381,6 +402,25 @@ async def handle_g2g_api(order_id: str, task_data: dict):
                 logger.warning(
                     f"[{order_id}] qty already delivered on G2G (idempotent re-dispatch); "
                     f"resuming proof/chat without re-submitting qty")
+            elif "more than undelivered quantity" in str(e).lower():
+                # Đơn giao TỪNG PHẦN (vd trader đã giao tay một phần trước): G2G còn
+                # undelivered < order_quantity ta gửi → 400. Đọc lại undelivered thật
+                # rồi submit ĐÚNG phần còn lại (không gửi trọn order_quantity).
+                remaining = await _undelivered_qty(api_id, auth)
+                if remaining is None:  # đọc lỗi / đơn terminal → giữ nguyên fail
+                    task_data["skip_steps"] = list(completed_steps)
+                    raise
+                if remaining > 0:
+                    await api_client.call_with_retry(
+                        api_client.submit_delivered_qty, api_id, remaining, auth, auth.seller_id)
+                    logger.info(
+                        f"[{order_id}] delivered_qty={remaining} OK (phần còn lại; "
+                        f"order_quantity={qty} bị chặn do đã giao một phần)")
+                else:  # undelivered=0 → đã giao đủ, coi như idempotent
+                    logger.warning(
+                        f"[{order_id}] undelivered=0 → qty đã giao đủ; resuming proof/chat")
+                completed_steps.add("qty")
+                task_data["skip_steps"] = list(completed_steps)
             else:
                 task_data["skip_steps"] = list(completed_steps)
                 raise
