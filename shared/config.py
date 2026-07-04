@@ -45,7 +45,7 @@ ERP_STATUS_UPDATE_URL = os.getenv("ERP_STATUS_UPDATE_URL", "")
 if not ERP_STATUS_UPDATE_URL and ERP_WEBHOOK_URL:
     # ERP_WEBHOOK_URL points at .new_order — swap suffix
     ERP_STATUS_UPDATE_URL = ERP_WEBHOOK_URL.rsplit(".", 1)[0] + ".status_update"
-STATUS_SYNC_INTERVAL_SEC = int(os.getenv("STATUS_SYNC_INTERVAL_SEC", "1800"))  # 30 min
+STATUS_SYNC_INTERVAL_SEC = int(os.getenv("STATUS_SYNC_INTERVAL_SEC", "600"))  # 10 min
 
 # ERP go-live cutoff. status_sync only reconciles orphaned terminal orders created
 # on/after this date — orders predating ERP were never in ERP and must not be pushed
@@ -60,11 +60,11 @@ ERP_GO_LIVE_MS = int(os.getenv("ERP_GO_LIVE_MS", "1779926400000"))  # 2026-05-29
 ERP_PENDING_ORDERS_URL = os.getenv("ERP_PENDING_ORDERS_URL", "")
 if not ERP_PENDING_ORDERS_URL and ERP_WEBHOOK_URL:
     ERP_PENDING_ORDERS_URL = ERP_WEBHOOK_URL.rsplit(".", 1)[0] + ".get_pending_marketplace_orders"
-# Run the ERP-driven reconcile every N status_sync cycles. 1 = every cycle (~30m).
+# Run the ERP-driven reconcile every N status_sync cycles. 1 = every cycle (~10m).
 # Safe at every cycle: the 12h back-off skips orders still delivering, so steady-state
 # only looks up genuinely-new pending orders (~150-lookup batch ≈ 60s of work).
 ERP_RECONCILE_EVERY_N_CYCLES = int(os.getenv("ERP_RECONCILE_EVERY_N_CYCLES", "1"))  # every cycle
-ERP_RECONCILE_BATCH = int(os.getenv("ERP_RECONCILE_BATCH", "150"))  # max lookups per run
+ERP_RECONCILE_BATCH = int(os.getenv("ERP_RECONCILE_BATCH", "250"))  # max lookups/run; fetch window = batch*3 (=750) phải phủ hết pending (prod ~600) nếu không đơn ngoài cửa sổ không bao giờ được lookup
 ERP_RECONCILE_THROTTLE_SEC = float(os.getenv("ERP_RECONCILE_THROTTLE_SEC", "0.4"))  # between lookups
 ERP_RECONCILE_BACKOFF_H = int(os.getenv("ERP_RECONCILE_BACKOFF_H", "12"))  # re-check still-pending after
 
