@@ -557,6 +557,9 @@ class G2GAPIScanner:
             "game": game,
             "server": server,
             "itemName": item_name,
+            # Title GỐC của sàn (chính xác marketplace) — ERP dùng để map item chính xác
+            # (vd "Grand Emerald" trong title phân biệt Grand vs Flawless) + lưu làm order title.
+            "offerTitle": offer_title,
             "quantity": qty,
             "character": character,
             "url": order_url,
