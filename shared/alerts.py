@@ -50,7 +50,11 @@ def _post(message: str) -> None:
         req = urllib.request.Request(
             ALERT_WEBHOOK_URL,
             data=json.dumps({"content": message}).encode(),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                # Cloudflare trước Discord chặn UA mặc định Python-urllib (error 1010)
+                "User-Agent": "BotPasteDon-ops-alert/1.0",
+            },
         )
         urllib.request.urlopen(req, timeout=15)
     except Exception as e:
