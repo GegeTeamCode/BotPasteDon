@@ -29,6 +29,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
+from shared.alerts import clear_ops_alert, send_ops_alert
 from shared.config import CHROME_BINARY_PATH, HEADLESS_MODE, DATABASE_PATH, G2G_EMAIL, G2G_PASSWORD
 from shared.constants import DEFAULT_USER_AGENT
 from shared.database import Database
@@ -988,6 +989,31 @@ def _read_eldo_disk_cookies(profile_dir: str) -> dict:
     return {n: v for n, v, h in rows if "eldorado" in (h or "")}
 
 
+def _eldo_disk_refresh_expiry(profile_dir: str):
+    """Return the on-disk __Host-EldoradoRefreshToken expiry (epoch seconds),
+    or None when the profile has no RefreshToken left (logged out / never
+    logged in). Used by the profile health check to warn BEFORE a profile is
+    needed for failover and turns out to be dead."""
+    import sqlite3
+    p = Path.cwd() / profile_dir / "cookies.sqlite"
+    if not p.exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=5)
+        try:
+            row = conn.execute(
+                "SELECT expiry FROM moz_cookies "
+                "WHERE name = '__Host-EldoradoRefreshToken' AND host LIKE '%eldorado%' "
+                "ORDER BY expiry DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("[ELDO] read disk RefreshToken expiry failed for %s: %s", profile_dir, e)
+        return None
+    return row[0] if row else None
+
+
 class EldoAuth(PlatformAuth):
     """Eldorado auth using Camoufox (bypass Cloudflare Turnstile)."""
 
@@ -1299,6 +1325,8 @@ class EldoAuth(PlatformAuth):
             self.captured_at = time.time()
             self._remember_for_refresh(backend_data)
             self._consecutive_failures = 0
+            clear_ops_alert("eldo-all")
+            clear_ops_alert(f"eldo-profile:{self.profile_dir}")
             return backend_data
 
         # Snapshot the current Cognito tokens so we can detect when a Camoufox
@@ -1341,13 +1369,28 @@ class EldoAuth(PlatformAuth):
                 self._profile_idx = ELDO_PROFILES.index(profile)
                 self._consecutive_failures = 0
                 self._remember_for_refresh(data)
+                clear_ops_alert("eldo-all")
+                clear_ops_alert(f"eldo-profile:{profile}")
                 return data
             logger.warning("[ELDO] Profile %s failed, trying next...", profile)
+            send_ops_alert(
+                f"eldo-profile:{profile}",
+                f"⚠️ [ELDO] Profile `{profile}` chết cookie (capture fail) — "
+                "cần re-login VNC 192.168.2.220:5900 sớm "
+                "(docs/operations.md → Eldorado session re-login).",
+            )
             self._next_profile()
 
         self._consecutive_failures += 1
         self._last_failure_time = time.time()
         logger.error("[ELDO] All %d profiles exhausted", len(ELDO_PROFILES))
+        send_ops_alert(
+            "eldo-all",
+            f"🔴 [ELDO] CẢ {len(ELDO_PROFILES)} profile chết cookie — bot Eldorado "
+            "NGỪNG quét/giao đơn. Re-login VNC 192.168.2.220:5900 NGAY "
+            "(docs/operations.md → Eldorado session re-login).",
+            cooldown=2 * 3600,
+        )
         return self.data or {}
 
         logger.info("[ELDO] Opening Camoufox for cookie capture...")
@@ -1663,15 +1706,47 @@ async def run_auth_service():
             }
             logger.info("[G2G] Profile: %s", "JWT OK" if g2g_alive else "no JWT")
 
-            # ── Eldorado profiles ──
+            # ── Eldorado profiles — check the on-disk RefreshToken, not just
+            # the directory: a logged-out profile still "exists" but is dead
+            # for failover. Warn early so re-login happens BEFORE all profiles
+            # are needed at once (2026-07-13: server-side revoke killed all 3).
+            now = time.time()
             for profile in ELDO_PROFILES:
                 is_active = (profile == eldo_auth.profile_dir)
-                path = Path.cwd() / profile
-                exists = path.exists()
-                detail = "exists" if exists else "missing"
+                rt_exp = _eldo_disk_refresh_expiry(profile)
+                if rt_exp is None:
+                    alive = False
+                    detail = "no RefreshToken on disk"
+                    send_ops_alert(
+                        f"eldo-disk:{profile}",
+                        f"⚠️ [ELDO] Profile `{profile}` KHÔNG còn RefreshToken trên đĩa "
+                        "(đã logout) — cần re-login VNC 192.168.2.220:5900.",
+                    )
+                elif rt_exp < now:
+                    alive = False
+                    detail = "RefreshToken expired"
+                    send_ops_alert(
+                        f"eldo-disk:{profile}",
+                        f"⚠️ [ELDO] Profile `{profile}` RefreshToken trên đĩa ĐÃ HẾT HẠN — "
+                        "cần re-login VNC 192.168.2.220:5900.",
+                    )
+                elif rt_exp - now < 72 * 3600:
+                    alive = True
+                    detail = f"RefreshToken expires in {(rt_exp - now) / 3600:.0f}h"
+                    send_ops_alert(
+                        f"eldo-disk-expiring:{profile}",
+                        f"⏳ [ELDO] Profile `{profile}` RefreshToken trên đĩa còn "
+                        f"{(rt_exp - now) / 3600:.0f}h — nên re-login VNC làm mới trước khi hết hạn.",
+                        cooldown=24 * 3600,
+                    )
+                else:
+                    alive = True
+                    detail = f"RefreshToken OK ({(rt_exp - now) / 86400:.1f}d left)"
+                    clear_ops_alert(f"eldo-disk:{profile}")
+                    clear_ops_alert(f"eldo-disk-expiring:{profile}")
                 profile_status[profile] = {
                     "platform": "eldo",
-                    "alive": exists,
+                    "alive": alive,
                     "detail": detail,
                     "checked_at": time.time(),
                     "is_active": is_active,

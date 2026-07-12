@@ -24,6 +24,11 @@ WEBHOOK_POE1 = os.getenv("WEBHOOK_POE1", "")
 ELDO_WEBHOOK_URL = os.getenv("ELDO_WEBHOOK_URL", "")
 G2G_WEBHOOK_URL = os.getenv("G2G_WEBHOOK_URL", "")
 
+# ── Ops alerts (profile cookie death, session kick) ──
+# Dedicated Discord webhook for operational alerts; falls back to the default
+# order-notification channel so alerts are never silently dropped.
+ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "") or WEBHOOK_DEFAULT
+
 # ── ERP Webhook ──
 ERP_WEBHOOK_URL = os.getenv("ERP_WEBHOOK_URL", "")
 ERP_API_KEY = os.getenv("ERP_API_KEY", "")
