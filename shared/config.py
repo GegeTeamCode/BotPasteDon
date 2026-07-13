@@ -69,7 +69,7 @@ if not ERP_PENDING_ORDERS_URL and ERP_WEBHOOK_URL:
 # Safe at every cycle: the 12h back-off skips orders still delivering, so steady-state
 # only looks up genuinely-new pending orders (~150-lookup batch ≈ 60s of work).
 ERP_RECONCILE_EVERY_N_CYCLES = int(os.getenv("ERP_RECONCILE_EVERY_N_CYCLES", "1"))  # every cycle
-ERP_RECONCILE_BATCH = int(os.getenv("ERP_RECONCILE_BATCH", "250"))  # max lookups/run; fetch window = batch*3 (=750) phải phủ hết pending (prod ~600) nếu không đơn ngoài cửa sổ không bao giờ được lookup
+ERP_RECONCILE_BATCH = int(os.getenv("ERP_RECONCILE_BATCH", "667"))  # max lookups/run; fetch window = batch*3 (=2001) phải phủ hết pending (2026-07-13 prod g2g ~1414, tràn window 750 cũ) nếu không đơn ngoài cửa sổ không bao giờ được lookup. Cần ERP cap limit>=window (nâng 1000->3000 PR #198)
 ERP_RECONCILE_THROTTLE_SEC = float(os.getenv("ERP_RECONCILE_THROTTLE_SEC", "0.4"))  # between lookups
 ERP_RECONCILE_BACKOFF_H = int(os.getenv("ERP_RECONCILE_BACKOFF_H", "12"))  # re-check still-pending after
 
