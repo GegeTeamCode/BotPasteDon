@@ -10,8 +10,15 @@ from shared.database import Database
 from shared.logging_config import setup_logger
 
 from status_sync.erp_client import ERPClient
+from status_sync.erp_reconcile import reconcile_from_erp
 from status_sync.reconcile import reconcile_unpushed
-from shared.config import ERP_GO_LIVE_ISO
+from shared.config import (
+    ERP_GO_LIVE_ISO,
+    ERP_RECONCILE_BACKOFF_H,
+    ERP_RECONCILE_BATCH,
+    ERP_RECONCILE_EVERY_N_CYCLES,
+    ERP_RECONCILE_THROTTLE_SEC,
+)
 
 logger = setup_logger("status_sync.eldo")
 
@@ -34,6 +41,7 @@ class EldoSync:
         self.auth_mgr = auth_mgr or EldoAuthManager()
         self.api = EldoradoAPIClient(self.auth_mgr)
         self.platform = "eldorado"
+        self._cycle = 0
 
     async def run_once(self) -> None:
         # Reconcile orphaned terminal pushes first — independent of marketplace
@@ -78,6 +86,22 @@ class EldoSync:
         for state in states_to_fetch:
             await self._reconcile_state(auth, state, push=not is_first_run,
                                          full_backfill=is_first_run)
+
+        # ERP-driven reconcile (per-order lookups) — mirror g2g_sync step 4. Closes the
+        # "completed-after-first-push" gap: an order pushed once (last_pushed_at set)
+        # whose terminal edge was recorded during a no-push pass is never re-pushed by
+        # reconcile_unpushed, and the incremental list scan misses it once it leaves
+        # the window (case SO-260708-H3PZDMX8, 2026-07-14).
+        if not is_first_run and self._cycle % ERP_RECONCILE_EVERY_N_CYCLES == 0:
+            try:
+                await reconcile_from_erp(
+                    self.db, self.erp, self.api, auth, self.platform,
+                    batch=ERP_RECONCILE_BATCH, throttle=ERP_RECONCILE_THROTTLE_SEC,
+                    backoff_h=ERP_RECONCILE_BACKOFF_H,
+                )
+            except Exception as e:
+                logger.warning("erp_reconcile failed: %s", e)
+        self._cycle += 1
 
         # Persist counts snapshot
         snapshot = {k: int(v) for k, v in counts.items() if isinstance(v, int)}

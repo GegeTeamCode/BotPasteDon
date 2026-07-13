@@ -33,6 +33,34 @@ _TERMINAL_LOOKUP = {
 }
 
 
+def _lookup_id(platform, ext):
+    """Marketplace lookup id: g2g detail wants order_item_id (ext + '-1');
+    eldorado's /orders/me/{id} takes the order GUID itself."""
+    return ext if platform == "eldorado" else ext + "-1"
+
+
+def _db_key(platform, ext):
+    """marketplace_status key: eldo GUIDs are stored lowercase (ERP stores UPPER,
+    sqlite compares exact) — normalize or the back-off never matches its row."""
+    return ext.lower() if platform == "eldorado" else ext
+
+
+def _detail_status(platform, detail) -> str:
+    """Extract the order status from a detail payload, per platform shape.
+
+    g2g: flat `order_item_status`. eldorado: nested `state.state` (CamelCase) +
+    EL-3: a Completed order with hasBeenRefundedPostCompletion means the money
+    was clawed back → treat as canceled so ERP reverses the wallet credit.
+    """
+    detail = detail or {}
+    if platform == "eldorado":
+        status = str(((detail.get("state") or {}).get("state")) or "").lower()
+        if status == "completed" and detail.get("hasBeenRefundedPostCompletion"):
+            return "canceled"
+        return status
+    return str(detail.get("order_item_status") or "").lower()
+
+
 def _recently_checked(db, platform, order_id, backoff_h) -> bool:
     """True if this order was looked up within backoff_h and was still non-terminal —
     skip it this run so we don't re-hammer orders that are genuinely still delivering."""
@@ -67,14 +95,15 @@ async def reconcile_from_erp(db, erp, api, auth, platform, *,
         ext = (o.get("external_order_id") or "").strip()
         if not ext:
             continue
-        if _recently_checked(db, platform, ext, backoff_h):
+        key = _db_key(platform, ext)
+        if _recently_checked(db, platform, key, backoff_h):
             continue
         if looked >= batch:
             break
         looked += 1
 
         try:
-            detail = await loop.run_in_executor(None, api.get_order_detail, ext + "-1", auth)
+            detail = await loop.run_in_executor(None, api.get_order_detail, _lookup_id(platform, ext), auth)
         except Exception as e:
             if _is_rate_limit(e):
                 logger.warning("erp_reconcile rate-limited after %d lookups — stop (retry_after=%ss)",
@@ -83,10 +112,10 @@ async def reconcile_from_erp(db, erp, api, auth, platform, *,
             logger.warning("erp_reconcile lookup %s failed: %s", ext, str(e)[:120])
             continue
 
-        status = str((detail or {}).get("order_item_status") or "").lower()
+        status = _detail_status(platform, detail)
         # Record what we saw — updates last_synced_at (drives back-off).
-        db.upsert_marketplace_status(platform, ext, status or "unknown",
-                                     order_item_id=ext + "-1")
+        db.upsert_marketplace_status(platform, key, status or "unknown",
+                                     order_item_id=None if platform == "eldorado" else ext + "-1")
 
         target = _TERMINAL_LOOKUP.get(status)
         if not target:
@@ -101,7 +130,7 @@ async def reconcile_from_erp(db, erp, api, auth, platform, *,
             "raw_payload": detail,
         })
         if ok:
-            db.mark_marketplace_pushed(platform, ext, True)
+            db.mark_marketplace_pushed(platform, key, True)
             if target == "completed":
                 completed += 1
             else:
