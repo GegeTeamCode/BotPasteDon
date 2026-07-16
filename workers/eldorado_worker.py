@@ -23,7 +23,7 @@ from shared.config import (
     CHROME_BINARY_PATH, HEADLESS_MODE, DATABASE_PATH,
     ELDO_USE_API, AUTH_SERVICE_URL,
 )
-from shared.constants import ORDER_DELIVERING, ORDER_COMPLETED, ORDER_FAILED
+from shared.constants import ORDER_DELIVERING, ORDER_DELIVERED, ORDER_COMPLETED, ORDER_FAILED
 from shared.database import Database
 from shared.driver_manager import get_driver
 from shared.logging_config import setup_logger
@@ -128,8 +128,11 @@ async def process_task(task_data: dict):
                 status = await handle_eldorado_fast(driver, task_data["order_url"], order_id)
                 if status != "success":
                     raise Exception("Fast delivery failed (Selenium)")
-            db.update_order_status(order_id, ORDER_COMPLETED)
-            logger.info(f"Completed (fast): {order_id}")
+            # Fast = delivered on marketplace but NO proof yet. Mark DELIVERED (not
+            # COMPLETED) so the operator can still send proof via "Đã giao"; the
+            # COMPLETED guard would otherwise block that follow-up step.
+            db.update_order_status(order_id, ORDER_DELIVERED)
+            logger.info(f"Delivered (fast, proof pending): {order_id}")
             await _notify_coordinator(order_id, thread_id, success=True,
                                       action="fast_delivery")
         elif ELDO_USE_API and api_client and auth_manager:
