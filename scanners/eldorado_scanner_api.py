@@ -185,12 +185,35 @@ class EldoradoAPIScanner:
             elif "path of exile" in title_lower:
                 game = "Path of Exile"
 
-        # Quantity
-        qty = raw.get("purchaseQuantity", 1)
-        if isinstance(qty, (int, float)):
-            qty = str(int(qty))
+        # Quantity + unit price — apply Eldorado `orderPricing.unitSystem`, which is
+        # the gold-per-purchase-unit (e.g. "Unit1000000000" = 1B per unit, "Unit1" = 1:1).
+        # ERP inventory measures Gold in MILLIONS; other currencies (POE orbs, items)
+        # are 1:1. Keep qty * unit_price == total. Eldorado shows e.g. "Gold x 60B"
+        # → purchaseQuantity=60 with unitSystem=Unit1000000000 → ERP qty=60000 (M),
+        # unit_price scaled down so the order total is unchanged.
+        _pricing = offer.get("orderPricing") or {}
+        try:
+            _pq = float(raw.get("purchaseQuantity", 1) or 1)
+        except (TypeError, ValueError):
+            _pq = 1.0
+        try:
+            _unit_val = int(str(_pricing.get("unitSystem", "Unit1")).replace("Unit", "")) or 1
+        except ValueError:
+            _unit_val = 1
+        try:
+            _ppu = float((_pricing.get("pricePerUnit") or {}).get("amount", 0) or 0)
+        except (TypeError, ValueError):
+            _ppu = 0.0
+        _is_gold = (offer.get("gameCategoryTitle") or "").strip().lower() == "gold"
+        if _is_gold:
+            _erp_base = 1_000_000  # ERP Gold unit = 1 million
+            _qty_num = _pq * _unit_val / _erp_base
+            _unit_price_num = (_ppu * _erp_base / _unit_val) if _unit_val else _ppu
         else:
-            qty = str(qty)
+            _qty_num = _pq * _unit_val
+            _unit_price_num = (_ppu / _unit_val) if _unit_val else _ppu
+        qty = str(int(_qty_num)) if float(_qty_num).is_integer() else repr(_qty_num)
+        unit_price_out = repr(_unit_price_num)
 
         # Character / ingame name from deliveryDetails or deliveryOptions
         # Priority: BattleNetTag > Username > CharacterName
@@ -260,7 +283,7 @@ class EldoradoAPIScanner:
             "url": f"https://www.eldorado.gg/order/{order_id}",
             # Pricing fields for ERP
             "sale_currency": total_price_obj.get("currency", "USD"),
-            "unit_price": str(pricing.get("pricePerUnit", {}).get("amount", "")),
+            "unit_price": unit_price_out,
             "total_price": str(total_amount or ""),
             "earning": str(earning) if earning is not None else None,
             "channel_fee": str(channel_fee) if channel_fee is not None else None,
