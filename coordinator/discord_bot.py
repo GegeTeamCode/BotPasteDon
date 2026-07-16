@@ -338,24 +338,54 @@ class CoordinatorBot(commands.Bot):
 
         await self.process_commands(message)
 
-    async def lock_thread(self, thread_id: str):
+    def _resolve_thread(self, thread_id, order_id=None):
+        """Return the discord.Thread for this order.
+
+        thread_id may be a numeric Discord id (Discord-triggered flow) OR an
+        order id like a Sell Order name / marketplace id (ERP-triggered flow —
+        the ERP sends thread_id=so.name). In the latter case the real numeric
+        discord_thread_id is looked up from the DB by order_id, avoiding the
+        `int("SO-xxx")` crash that left threads un-archived until Discord hit
+        the active-thread cap.
+        """
+        tid = None
+        if thread_id is not None and str(thread_id).isdigit():
+            tid = int(thread_id)
+        elif self.db:
+            for key in (order_id, thread_id):
+                if not key:
+                    continue
+                row = self.db.get_order(str(key).upper())
+                if row and row.get("discord_thread_id"):
+                    try:
+                        tid = int(row["discord_thread_id"])
+                    except (TypeError, ValueError):
+                        continue
+                    break
+        if tid is None:
+            return None
+        ch = self.get_channel(tid)
+        return ch if isinstance(ch, discord.Thread) else None
+
+    async def lock_thread(self, thread_id, order_id=None):
         """Send completion message, then lock + archive thread."""
         try:
-            thread = self.get_channel(int(thread_id))
-            if thread and isinstance(thread, discord.Thread):
+            thread = self._resolve_thread(thread_id, order_id)
+            if thread:
                 await thread.send("✅ Đã trả đơn thành công!")
                 await thread.edit(locked=True, archived=True)
                 logger.info(f"Thread completed: {thread.name}")
                 return True
+            logger.warning(f"lock_thread: no thread resolved (thread_id={thread_id}, order={order_id})")
         except Exception as e:
-            logger.error(f"Failed to complete thread {thread_id}: {e}")
+            logger.error(f"Failed to complete thread {thread_id} (order={order_id}): {e}")
         return False
 
     async def update_fast_delivered(self, thread_id: str, order_id: str):
         """After fast delivery: edit message to remove 'Khách vào' button."""
         try:
-            thread = self.get_channel(int(thread_id))
-            if not thread or not isinstance(thread, discord.Thread):
+            thread = self._resolve_thread(thread_id, order_id)
+            if not thread:
                 return
             # Find the message with buttons and edit it
             async for msg in thread.history(limit=10):
@@ -447,7 +477,7 @@ async def _http_server():
                 # Fast delivery: remove "Khách vào" button, keep "Đã giao"
                 await _bot_instance.update_fast_delivered(thread_id, order_id)
             elif success:
-                await _bot_instance.lock_thread(thread_id)
+                await _bot_instance.lock_thread(thread_id, order_id)
                 logger.info(f"Order completed & thread locked: {order_id}")
             else:
                 logger.warning(f"Order failed: {order_id}")
