@@ -1,0 +1,19 @@
+# Force LF in the working tree (overrides editors/mounts that inject CRLF) so the
+# repo never shows a whole tree as "modified" from line-ending drift. Blobs are LF.
+* text=auto eol=lf
+
+# Binary assets — never apply line-ending normalization
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.eot  binary
+*.otf  binary
+*.pdf  binary
+*.db   binary
+*.har  binary
