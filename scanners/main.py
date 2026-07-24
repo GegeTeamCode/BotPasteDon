@@ -64,7 +64,6 @@ async def send_order_webhook(order_data: dict, platform: str) -> bool:
     webhook_url = erp_target["webhook_url"]
     erp_key = erp_key_for_target(erp_target, platform)
     if webhook_url and erp_key:
-        order_data["server"] = erp_target["id"]
         order_id = order_data.get("orderId", "")
         # Claim the order in-flight so erp_retry_loop can't post it concurrently.
         claimed = bool(_scanner_db and order_id and _scanner_db.claim_erp_order(order_id))
@@ -159,7 +158,6 @@ async def handle_manual_paste(scanner, platform: str, db, order_id: str) -> dict
     if not (webhook_url and erp_key):
         return {"status": "error", "order_id": order_id,
                 "error": "ERP webhook chưa cấu hình trên bot"}
-    order_data["server"] = erp_target["id"]
     claimed = bool(db.claim_erp_order(order_id))
     try:
         erp_ok = await send_erp_webhook(order_data, webhook_url, erp_key)
@@ -247,7 +245,6 @@ async def erp_retry_loop(platform: str):
                         db.increment_erp_retry(order_id)
                         db.release_erp_order(order_id)
                         continue
-                    order_data["server"] = erp_target["id"]
                     try:
                         erp_ok = await send_erp_webhook(order_data, webhook_url, erp_key)
                     except Exception:
