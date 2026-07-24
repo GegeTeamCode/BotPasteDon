@@ -128,6 +128,8 @@ async def reconcile_from_erp(db, erp, api, auth, platform, *,
             "external_order_id": ext,
             "marketplace_state": target,
             "raw_payload": detail,
+            # Route the terminal push back to the ERP this order was listed by.
+            "_erp_target": o.get("_erp_target"),
         })
         if ok:
             db.mark_marketplace_pushed(platform, key, True)

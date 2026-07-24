@@ -73,6 +73,74 @@ ERP_RECONCILE_BATCH = int(os.getenv("ERP_RECONCILE_BATCH", "667"))  # max lookup
 ERP_RECONCILE_THROTTLE_SEC = float(os.getenv("ERP_RECONCILE_THROTTLE_SEC", "0.4"))  # between lookups
 ERP_RECONCILE_BACKOFF_H = int(os.getenv("ERP_RECONCILE_BACKOFF_H", "12"))  # re-check still-pending after
 
+# ── Dual-server ERP routing (currency games → .102) ──────────────────────────
+# PoE / PoE2 / Torchlight orders paste to the "currency" ERP (.102); everything
+# else (Diablo 4 + any new/unknown game) stays on the "main" ERP (.100). The
+# currency ERP reuses the SAME bot API keys — its Bot Credential secrets are
+# identical to .100 (migrated as-is). Set ERP_WEBHOOK_URL_CURRENCY to enable;
+# when unset, currency games fall back to main so orders are never dropped.
+ERP_WEBHOOK_URL_CURRENCY = os.getenv("ERP_WEBHOOK_URL_CURRENCY", "")
+ERP_API_KEY_ELDO_CURRENCY = os.getenv("ERP_API_KEY_ELDO_CURRENCY", "") or ERP_API_KEY_ELDO
+ERP_API_KEY_G2G_CURRENCY = os.getenv("ERP_API_KEY_G2G_CURRENCY", "") or ERP_API_KEY_G2G
+ERP_STATUS_UPDATE_URL_CURRENCY = os.getenv("ERP_STATUS_UPDATE_URL_CURRENCY", "")
+if not ERP_STATUS_UPDATE_URL_CURRENCY and ERP_WEBHOOK_URL_CURRENCY:
+    ERP_STATUS_UPDATE_URL_CURRENCY = ERP_WEBHOOK_URL_CURRENCY.rsplit(".", 1)[0] + ".status_update"
+ERP_PENDING_ORDERS_URL_CURRENCY = os.getenv("ERP_PENDING_ORDERS_URL_CURRENCY", "")
+if not ERP_PENDING_ORDERS_URL_CURRENCY and ERP_WEBHOOK_URL_CURRENCY:
+    ERP_PENDING_ORDERS_URL_CURRENCY = ERP_WEBHOOK_URL_CURRENCY.rsplit(".", 1)[0] + ".get_pending_marketplace_orders"
+
+# Games routed to the currency ERP. Matched case-insensitively against
+# order_data["game"]. Override via CURRENCY_ERP_GAMES (comma-separated).
+CURRENCY_ERP_GAMES = {
+    g.strip().lower()
+    for g in os.getenv(
+        "CURRENCY_ERP_GAMES", "Path of Exile,Path of Exile 2,Torchlight: Infinite",
+    ).split(",")
+    if g.strip()
+}
+
+# ERP target registry: id → {webhook/status/pending urls, per-platform keys}.
+ERP_TARGETS = {
+    "main": {
+        "id": "main",
+        "webhook_url": ERP_WEBHOOK_URL,
+        "status_update_url": ERP_STATUS_UPDATE_URL,
+        "pending_orders_url": ERP_PENDING_ORDERS_URL,
+        "key_eldo": ERP_API_KEY_ELDO,
+        "key_g2g": ERP_API_KEY_G2G,
+    },
+    "currency": {
+        "id": "currency",
+        "webhook_url": ERP_WEBHOOK_URL_CURRENCY,
+        "status_update_url": ERP_STATUS_UPDATE_URL_CURRENCY,
+        "pending_orders_url": ERP_PENDING_ORDERS_URL_CURRENCY,
+        "key_eldo": ERP_API_KEY_ELDO_CURRENCY,
+        "key_g2g": ERP_API_KEY_G2G_CURRENCY,
+    },
+}
+
+
+def erp_target_id_for_game(game: str) -> str:
+    """Return the ERP target id ('main' or 'currency') for an order's game.
+
+    Currency games route to 'currency' (.102) only when its webhook is
+    configured; otherwise fall back to 'main' so an order is never dropped.
+    """
+    if (game or "").strip().lower() in CURRENCY_ERP_GAMES and ERP_WEBHOOK_URL_CURRENCY:
+        return "currency"
+    return "main"
+
+
+def erp_target_for_game(game: str) -> dict:
+    """Return the ERP target config dict for an order's game."""
+    return ERP_TARGETS[erp_target_id_for_game(game)]
+
+
+def erp_key_for_target(target: dict, platform: str) -> str:
+    """Per-platform API key from a target config."""
+    return target["key_g2g"] if (platform or "").lower() == "g2g" else target["key_eldo"]
+
+
 # ── Chrome / Selenium ──
 CHROME_BINARY_PATH = os.getenv("CHROME_BINARY_PATH", "")
 HEADLESS_MODE = os.getenv("HEADLESS_MODE", "false").lower() in ("true", "1", "yes")

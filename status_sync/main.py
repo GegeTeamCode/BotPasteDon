@@ -68,11 +68,15 @@ async def _cycle_loop(interval: int, g2g: G2GSync, eldo: EldoSync):
 
 async def _main(interval: int, once: bool):
     db = Database(DATABASE_PATH)
-    erp = ERPClient()
+    # game_resolver lets the client route each status push to the ERP that owns
+    # the order (currency games → .102, everything else → .100).
+    erp = ERPClient(game_resolver=db.get_order_game)
     if not erp.url:
         logger.error("ERP_STATUS_UPDATE_URL not set in .env — aborting")
         return
-    logger.info("status_sync starting | interval=%ds | erp_url=%s", interval, erp.url)
+    target_ids = ",".join(t.get("id") for t in erp.targets) or "none"
+    logger.info("status_sync starting | interval=%ds | erp_targets=%s | main_url=%s",
+                interval, target_ids, erp.url)
 
     g2g = G2GSync(db, erp)
     eldo = EldoSync(db, erp)

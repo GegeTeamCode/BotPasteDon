@@ -14,7 +14,7 @@ from aiohttp import web
 from shared.config import (
     SCANNER_CONFIG, CHROME_BINARY_PATH, HEADLESS_MODE, DATABASE_PATH,
     G2G_USE_API, AUTH_SERVICE_URL, ELDO_USE_API,
-    ERP_WEBHOOK_URL, ERP_API_KEY_ELDO, ERP_API_KEY_G2G,
+    erp_target_for_game, erp_key_for_target,
     MANUAL_PASTE_SECRET, MANUAL_PASTE_PORT_G2G, MANUAL_PASTE_PORT_ELDO,
 )
 from shared.database import Database
@@ -59,19 +59,21 @@ async def send_order_webhook(order_data: dict, platform: str) -> bool:
     message = format_order_message(order_data, fields_config.get("showLabels", False))
     discord_ok = await send_discord_webhook(target_url, message, order_data)
 
-    # Send to ERP — await and track sync status
-    if ERP_WEBHOOK_URL:
-        erp_key = ERP_API_KEY_ELDO if platform == "eldorado" else ERP_API_KEY_G2G
-        if erp_key:
-            order_id = order_data.get("orderId", "")
-            # Claim the order in-flight so erp_retry_loop can't post it concurrently.
-            claimed = bool(_scanner_db and order_id and _scanner_db.claim_erp_order(order_id))
-            erp_ok = await send_erp_webhook(order_data, ERP_WEBHOOK_URL, erp_key)
-            if _scanner_db and order_id:
-                if erp_ok:
-                    _scanner_db.mark_erp_synced(order_id)
-                elif claimed:
-                    _scanner_db.release_erp_order(order_id)
+    # Send to ERP — route by game (currency games → .102), await + track sync.
+    erp_target = erp_target_for_game(order_data.get("game", ""))
+    webhook_url = erp_target["webhook_url"]
+    erp_key = erp_key_for_target(erp_target, platform)
+    if webhook_url and erp_key:
+        order_data["server"] = erp_target["id"]
+        order_id = order_data.get("orderId", "")
+        # Claim the order in-flight so erp_retry_loop can't post it concurrently.
+        claimed = bool(_scanner_db and order_id and _scanner_db.claim_erp_order(order_id))
+        erp_ok = await send_erp_webhook(order_data, webhook_url, erp_key)
+        if _scanner_db and order_id:
+            if erp_ok:
+                _scanner_db.mark_erp_synced(order_id)
+            elif claimed:
+                _scanner_db.release_erp_order(order_id)
 
     return discord_ok
 
@@ -151,13 +153,16 @@ async def handle_manual_paste(scanner, platform: str, db, order_id: str) -> dict
     # 3. Push to ERP (authoritative). send_erp_webhook returns True on ok OR
     #    duplicate; the ERP side dedupes by external_order_id. On failure we
     #    leave erp_synced=0 so erp_retry_loop keeps retrying.
-    erp_key = ERP_API_KEY_ELDO if platform == "eldorado" else ERP_API_KEY_G2G
-    if not (ERP_WEBHOOK_URL and erp_key):
+    erp_target = erp_target_for_game(order_data.get("game", ""))
+    webhook_url = erp_target["webhook_url"]
+    erp_key = erp_key_for_target(erp_target, platform)
+    if not (webhook_url and erp_key):
         return {"status": "error", "order_id": order_id,
                 "error": "ERP webhook chưa cấu hình trên bot"}
+    order_data["server"] = erp_target["id"]
     claimed = bool(db.claim_erp_order(order_id))
     try:
-        erp_ok = await send_erp_webhook(order_data, ERP_WEBHOOK_URL, erp_key)
+        erp_ok = await send_erp_webhook(order_data, webhook_url, erp_key)
     except Exception as e:
         erp_ok = False
         logger.error("manual paste %s ERP push error: %s", order_id, e)
@@ -235,9 +240,16 @@ async def erp_retry_loop(platform: str):
                         continue
                     import json as _json
                     order_data = _json.loads(raw)
-                    erp_key = ERP_API_KEY_ELDO if order["platform"] == "eldorado" else ERP_API_KEY_G2G
+                    erp_target = erp_target_for_game(order_data.get("game", ""))
+                    webhook_url = erp_target["webhook_url"]
+                    erp_key = erp_key_for_target(erp_target, order["platform"])
+                    if not (webhook_url and erp_key):
+                        db.increment_erp_retry(order_id)
+                        db.release_erp_order(order_id)
+                        continue
+                    order_data["server"] = erp_target["id"]
                     try:
-                        erp_ok = await send_erp_webhook(order_data, ERP_WEBHOOK_URL, erp_key)
+                        erp_ok = await send_erp_webhook(order_data, webhook_url, erp_key)
                     except Exception:
                         erp_ok = False
                     if erp_ok:

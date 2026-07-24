@@ -337,6 +337,26 @@ class Database:
             finally:
                 conn.close()
 
+    def get_order_game(self, order_id: str) -> str:
+        """Return the recorded game for an order (''  if unknown).
+
+        Used by status_sync to route each ERP status_update to the server that
+        owns the order (currency games → .102, everything else → .100).
+        """
+        if not order_id:
+            return ""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                row = conn.execute(
+                    "SELECT game FROM orders WHERE order_id = ? LIMIT 1", (order_id,),
+                ).fetchone()
+                return (row["game"] if row and row["game"] else "") or ""
+            except Exception:
+                return ""
+            finally:
+                conn.close()
+
     def get_unsynced_orders(
         self,
         max_retries: int = 50,
