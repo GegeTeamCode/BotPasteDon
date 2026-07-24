@@ -17,6 +17,15 @@ from scanners.base_scanner import normalize_id, check_keywords
 
 logger = setup_logger("scanner.eldo.api")
 
+# Eldorado catalogs some games under a title that does NOT match the ERP Game Title,
+# so the game-library lookup returns the wrong `game` and ERP's _find_game_context
+# can't resolve it (order lands with NULL game_context). Map the Eldorado gameId to
+# the canonical ERP Game Title here. Keyed by str(gameId).
+#   225 -> library title "Flame Elementium" (the currency), ERP game is "Torchlight: Infinite".
+ELDO_GAME_ID_TITLES = {
+    "225": "Torchlight: Infinite",
+}
+
 
 class EldoradoAPIScanner:
     """Eldorado Scanner using REST API — no browser needed."""
@@ -163,9 +172,14 @@ class EldoradoAPIScanner:
         elif game_slug == "diablo-4":
             game = "Diablo 4"
         else:
-            # Fallback to game library
             game_id = str(offer.get("gameId", ""))
-            if auth and game_id:
+            # gameId override wins over the library title, which mislabels some games
+            # (e.g. 225 -> "Flame Elementium" instead of "Torchlight: Infinite").
+            override = ELDO_GAME_ID_TITLES.get(game_id)
+            if override:
+                game = override
+            elif auth and game_id:
+                # Fallback to game library
                 try:
                     game = self.api.get_game_name(game_id, auth)
                 except Exception:
@@ -175,7 +189,7 @@ class EldoradoAPIScanner:
 
         # Heuristic: game library may return wrong name (e.g. "Power Leveling" for D4 Items)
         # Detect from trade environment or offer title
-        if game not in ("Path of Exile", "Path of Exile 2", "Diablo 4"):
+        if game not in ("Path of Exile", "Path of Exile 2", "Diablo 4", *ELDO_GAME_ID_TITLES.values()):
             env_vals = " ".join(te.get("value", "").lower() for te in trade_env)
             title_lower = (item_name + " " + env_vals).lower()
             if "diablo" in title_lower or "seasonal realm" in env_vals or "softcore" in env_vals or "hardcore" in env_vals:
