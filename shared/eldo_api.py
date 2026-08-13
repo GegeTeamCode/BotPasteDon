@@ -111,11 +111,17 @@ class EldoradoAPIClient:
     # ── Scanner APIs ───────────────────────────────────────────────────────
 
     def get_pending_orders(self, auth: EldoAuthData) -> list:
+        # "Paid" = paid, awaiting seller delivery. Eldorado retired the old
+        # "PendingDelivery" enum on 2026-08-13 (~17:10 +07) and now rejects it
+        # with HTTP 400 "invalid values: OrderState" — the UI label still reads
+        # "Pending Delivery", but the API state has always been Paid.
+        # Do NOT omit orderState: an unfiltered list also returns Delivered /
+        # Completed / Canceled orders and the scanner would re-paste them.
         params = {
             "cursorValue": INITIAL_CURSOR,
             "pageSize": "20",
             "pageDirection": "Next",
-            "orderState": "PendingDelivery",
+            "orderState": "Paid",
             "isAscendingDateOrder": "false",
             "ignorePendingReviewOrders": "true",
             "displayFilter": "DisplaySellingOrders",
