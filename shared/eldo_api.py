@@ -142,6 +142,56 @@ class EldoradoAPIClient:
         j = self._parse(r, "order_detail")
         return j
 
+    def get_delivery_detail_value(self, order_id: str, detail_id: str,
+                                  auth: EldoAuthData) -> str:
+        """Fetch the value of ONE delivery detail (Username / BattleNetTag / ...).
+
+        Eldorado stopped inlining buyer-supplied delivery details in the order
+        payload on 2026-08-19 (~09:00 +07): `deliveryDetails` is now null and the
+        order only carries `deliveryDetailsSubmission.details = [{id, type}]`.
+        The actual value must be pulled per-id from this endpoint.
+        """
+        r = self._sess.get(
+            f"{BASE}/v1/orders/me/{order_id}/delivery-details/{detail_id}",
+            headers=auth.build_headers(), timeout=30,
+        )
+        j = self._parse(r, "delivery_detail_value")
+        return (j or {}).get("value") or ""
+
+    def resolve_delivery_details(self, order_detail: dict,
+                                 auth: EldoAuthData) -> list:
+        """Return delivery details in the legacy shape [{"type":.., "value":..}].
+
+        Uses the inlined `deliveryDetails` when Eldorado still sends it (old orders,
+        or if they revert); otherwise resolves each id under
+        `deliveryDetailsSubmission.details` via get_delivery_detail_value.
+        A single failing id is skipped, not fatal — a partial map still beats none.
+        """
+        inline = order_detail.get("deliveryDetails") or []
+        if inline:
+            return inline
+
+        order_id = order_detail.get("id") or ""
+        sub = order_detail.get("deliveryDetailsSubmission") or {}
+        out = []
+        for d in sub.get("details") or []:
+            did = d.get("id")
+            dtype = d.get("type")
+            if not did or not dtype:
+                continue
+            try:
+                val = self.get_delivery_detail_value(order_id, did, auth)
+            except Exception as e:
+                logger.warning("[%s] delivery-detail %s (%s) failed: %s",
+                               order_id, did, dtype, e)
+                continue
+            if val:
+                out.append({"type": dtype, "value": val})
+        if out:
+            logger.info("[%s] Resolved %d delivery detail(s): %s",
+                        order_id, len(out), [d["type"] for d in out])
+        return out
+
     # ── status_sync APIs ────────────────────────────────────────────────────
 
     def list_orders_by_state(self, order_state: str, auth: EldoAuthData,

@@ -101,6 +101,18 @@ class EldoradoAPIScanner:
             raw = order_info.get("raw", {})
             if raw.get("buyerUsername") and not detail.get("buyerUsername"):
                 detail["buyerUsername"] = raw["buyerUsername"]
+            # Since 2026-08-19 the buyer's Username/BattleNetTag is no longer inlined
+            # in the order payload — resolve it from deliveryDetailsSubmission and
+            # write it back in the legacy shape _map_order_data expects.
+            if not detail.get("deliveryDetails"):
+                resolved = await loop.run_in_executor(
+                    None, self.api.resolve_delivery_details, detail, auth,
+                )
+                if resolved:
+                    detail["deliveryDetails"] = resolved
+                else:
+                    logger.warning("[%s] No delivery details resolved — "
+                                   "character will fall back to 'Check Order'", order_id)
             return self._map_order_data(detail, auth)
         except Exception as e:
             logger.error("Extract error for %s: %s", order_id, e)
