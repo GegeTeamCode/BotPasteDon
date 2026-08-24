@@ -19,7 +19,7 @@ import os
 import signal
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from aiohttp import web, ClientSession, ClientTimeout
@@ -165,7 +165,16 @@ def _build_service_status() -> dict:
             entry["pid"] = hb["pid"]
             entry["last_beat"] = beat_str
             try:
+                # heartbeat.last_beat is written by SQLite datetime('now') — always
+                # UTC, and stored naive. fromisoformat keeps it naive, so .timestamp()
+                # would read it as server-local time. That was harmless while the box
+                # ran UTC; since it was set to Asia/Ho_Chi_Minh (2026-07-15) it added a
+                # flat +7h to every age and showed all services permanently stale.
+                # Attach UTC explicitly. (watchdog is unaffected — get_stale_services
+                # compares inside SQL, where both sides are UTC.)
                 beat_dt = datetime.fromisoformat(beat_str)
+                if beat_dt.tzinfo is None:
+                    beat_dt = beat_dt.replace(tzinfo=timezone.utc)
                 age = now - beat_dt.timestamp()
                 entry["age_seconds"] = int(age)
                 entry["status"] = "healthy" if age < STALE_THRESHOLD else "stale"
