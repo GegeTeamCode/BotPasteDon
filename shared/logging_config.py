@@ -30,6 +30,10 @@ def setup_logger(name: str, log_file: str = None) -> logging.Logger:
         return logger
 
     logger.setLevel(logging.DEBUG)
+    # Dotted names ("status_sync.erp_reconcile") whose parent is also a setup_logger()
+    # caller ("status_sync") would otherwise emit twice: once via this logger's handler,
+    # once via the parent's after propagation. Every handler we need is attached here.
+    logger.propagate = False
 
     fmt = logging.Formatter(
         "[%(asctime)s][%(name)s] %(levelname)s: %(message)s",

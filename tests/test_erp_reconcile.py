@@ -140,9 +140,63 @@ def test_eldorado():
     print("test_eldorado OK")
 
 
+def test_not_found_backs_off():
+    """404 = id khong phai order tren san (staff go tay ticket/BattleTag vao
+    external_order_id). Phai ghi row de back-off an, khong retry vinh vien,
+    va KHONG duoc day terminal state len ERP."""
+
+    class NotFound(Exception):
+        status = 404
+
+    class NFApi(FakeAPI):
+        def get_order_detail(self, item_id, auth, seller_id=""):
+            self.lookups.append(item_id)
+            if item_id == "BAD-1":
+                raise NotFound("order_detail: HTTP 404 | Data was not found: order_exist")
+            return {"order_item_status": "completed"}
+
+    orders = [{"external_order_id": x} for x in ("BAD", "C1")]
+    db, erp, api = FakeDB(), FakeERP(orders), NFApi({})
+    run(reconcile_from_erp(db, erp, api, None, "g2g", batch=10, throttle=0, backoff_h=12))
+    assert "C1-1" in api.lookups, "404 khong duoc chan cac don sau"
+    assert db.rows.get(("g2g", "BAD"), {}).get("marketplace_state") == "not_found", db.rows
+    assert all(c[0] != "BAD" for c in erp.calls), "not_found khong duoc push len ERP"
+
+    # Lan chay thu 2 trong cua so back-off: khong duoc lookup lai.
+    api2 = NFApi({})
+    run(reconcile_from_erp(db, erp, api2, None, "g2g", batch=10, throttle=0, backoff_h=12))
+    assert "BAD-1" not in api2.lookups, "404 phai back-off, khong lookup lai moi cycle"
+    print("test_not_found_backs_off OK")
+
+
+def test_transient_error_no_backoff():
+    """Loi tam thoi (timeout/5xx) KHONG duoc ghi row — lan sau phai thu lai ngay,
+    khac han 404."""
+
+    class Boom(Exception):
+        status = 500
+
+    class BoomApi(FakeAPI):
+        def get_order_detail(self, item_id, auth, seller_id=""):
+            self.lookups.append(item_id)
+            raise Boom("order_detail: HTTP 500")
+
+    orders = [{"external_order_id": "T1"}]
+    db, erp, api = FakeDB(), FakeERP(orders), BoomApi({})
+    run(reconcile_from_erp(db, erp, api, None, "g2g", batch=10, throttle=0, backoff_h=12))
+    assert ("g2g", "T1") not in db.rows, "loi tam thoi khong duoc ghi back-off"
+
+    api2 = BoomApi({})
+    run(reconcile_from_erp(db, erp, api2, None, "g2g", batch=10, throttle=0, backoff_h=12))
+    assert "T1-1" in api2.lookups, "loi tam thoi phai duoc thu lai ngay cycle sau"
+    print("test_transient_error_no_backoff OK")
+
+
 if __name__ == "__main__":
     test_basic()
     test_backoff()
     test_rate_limit_stops()
     test_eldorado()
+    test_not_found_backs_off()
+    test_transient_error_no_backoff()
     print("ALL PASS")

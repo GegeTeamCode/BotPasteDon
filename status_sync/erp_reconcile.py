@@ -23,6 +23,14 @@ def _is_rate_limit(exc) -> bool:
     + unit-testable). RateLimitError carries status==429."""
     return getattr(exc, "status", None) == 429 or type(exc).__name__ == "RateLimitError"
 
+
+def _is_not_found(exc) -> bool:
+    """Marketplace says this id is not an order (HTTP 404). Both platforms' APIError
+    carries `.status`. Permanent, unlike a timeout/5xx: it means `external_order_id`
+    never was a marketplace id — in prod, staff hand-typing a support-ticket number or
+    a BattleTag into the field on a manually-created Sell Order."""
+    return getattr(exc, "status", None) == 404
+
 # marketplace order_item_status -> state we push to ERP. Anything else (delivering /
 # preparing / unknown) is still in progress: record for back-off, don't push.
 _TERMINAL_LOOKUP = {
@@ -37,6 +45,11 @@ def _lookup_id(platform, ext):
     """Marketplace lookup id: g2g detail wants order_item_id (ext + '-1');
     eldorado's /orders/me/{id} takes the order GUID itself."""
     return ext if platform == "eldorado" else ext + "-1"
+
+
+def _item_id(platform, ext):
+    """order_item_id column value: g2g rows carry `<ext>-1`; eldorado has no item id."""
+    return None if platform == "eldorado" else ext + "-1"
 
 
 def _db_key(platform, ext):
@@ -89,7 +102,7 @@ async def reconcile_from_erp(db, erp, api, auth, platform, *,
         return 0, 0, 0
 
     loop = asyncio.get_running_loop()
-    completed = cancelled = skipped = looked = 0
+    completed = cancelled = skipped = failed = looked = 0
 
     for o in orders:
         ext = (o.get("external_order_id") or "").strip()
@@ -110,12 +123,25 @@ async def reconcile_from_erp(db, erp, api, auth, platform, *,
                                looked, getattr(e, "retry_after", "?"))
                 break
             logger.warning("erp_reconcile lookup %s failed: %s", ext, str(e)[:120])
+            failed += 1
+            if _is_not_found(e):
+                # Record the miss so back-off applies. upsert_marketplace_status is the
+                # only writer of last_synced_at, so without this a 404 order has no row,
+                # `_recently_checked` never matches, and it is re-looked-up every cycle
+                # forever (prod: 3 g2g orders, ~13.5k wasted lookups over 40 days).
+                # "not_found" is outside _TERMINAL_LOOKUP, so it backs off rather than
+                # being pushed to ERP as a terminal state.
+                db.upsert_marketplace_status(platform, key, "not_found",
+                                             order_item_id=_item_id(platform, ext))
+            # Throttle failures too — the success paths below do, and a run of failures
+            # would otherwise fire back-to-back into the 429 this function tries to dodge.
+            await asyncio.sleep(throttle)
             continue
 
         status = _detail_status(platform, detail)
         # Record what we saw — updates last_synced_at (drives back-off).
         db.upsert_marketplace_status(platform, key, status or "unknown",
-                                     order_item_id=None if platform == "eldorado" else ext + "-1")
+                                     order_item_id=_item_id(platform, ext))
 
         target = _TERMINAL_LOOKUP.get(status)
         if not target:
@@ -139,6 +165,6 @@ async def reconcile_from_erp(db, erp, api, auth, platform, *,
                 cancelled += 1
         await asyncio.sleep(throttle)
 
-    logger.info("%s erp_reconcile: looked=%d completed=%d cancelled=%d skip=%d (pending=%d)",
-                platform, looked, completed, cancelled, skipped, len(orders))
+    logger.info("%s erp_reconcile: looked=%d completed=%d cancelled=%d skip=%d fail=%d (pending=%d)",
+                platform, looked, completed, cancelled, skipped, failed, len(orders))
     return completed, cancelled, skipped
