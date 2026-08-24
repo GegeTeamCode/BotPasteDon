@@ -495,6 +495,32 @@ ssh root@192.168.2.220 'cd /opt/BotPasteDon && HEADLESS_MODE=false setsid venv/b
 # 5. Sau khi /auth/g2g return JWT, switch back HEADLESS_MODE=true va restart watchdog
 ```
 
+**Cach khac (khong phai launch auth.main tay)**: neu auth service dang chay, POST
+`http://localhost:8010/auth/relogin/chrome_profile_g2g` — no clear `_captcha_until`,
+goi `capture()`, va khi gap captcha se tu mo Chrome visible tren :99 (cua so 5 phut).
+
+**⚠️ Xvfb :99 phai LUON chay.** Luong captcha fallback (`auth/main.py` ~503-513) goi
+`self.close()` dong Chrome headless roi `Popen(google-chrome-stable, DISPLAY=":99")`.
+Neu :99 khong ton tai, Chrome im lang khong mo (Popen khong check return) NHUNG driver
+headless thi da bi dong → `g2g_auth.driver = None` → moi auto-login sau do chet voi
+`'NoneType' object has no attribute 'find_element'/'current_url'`, scanner G2G mu hoan
+toan. Da xay ra 2026-08-24 (mu ~20 phut) do don Xvfb sau khi re-login Eldorado xong.
+Dung Xvfb la ha tang thuong truc, khong phai thu tao/xoa theo phien:
+`nohup Xvfb :99 -screen 0 1440x900x24 -ac -nolisten tcp &` + `x11vnc -display :99
+-rfbauth /root/.vnc/passwd -rfbport 5900 -localhost -forever -shared -bg`.
+
+**⚠️ BAY: phai DONG cua so Chrome VNC sau khi login xong.** Vong poll cho manual login
+(`for _ in range(60)`) goi `init_driver()` mo Chrome headless tren **CUNG
+`--user-data-dir`** voi Chrome VNC dang mo. Chrome khong cho 2 instance chung profile
+→ chromedriver chet ngay (`RemoteDisconnected` / `Connection refused`) → login THANH
+CONG van bi bao `[G2G] Manual login timeout`. Sau khi login xong, SIGTERM Chrome
+visible; ~4s sau se thay `[G2G] JWT captured | cookies: 34` + `Manual login successful!`.
+
+**Don G2G da `completed` thi scanner KHONG quet duoc**: `get_pending_orders` chi lay
+`status=preparing`. Don hoan tat trong luc bot mu phai paste tay (xem
+[manual_paste.md](manual_paste.md)) — luong do van route dung theo game qua
+`erp_target_for_game()`.
+
 ### G2G Scanner — Auth service unreachable (curl timeout 30s)
 
 **Trieu chung**:
