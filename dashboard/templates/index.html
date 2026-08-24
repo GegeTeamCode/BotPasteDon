@@ -452,7 +452,7 @@ function dashboard() {
     evtSource: null,
 
     // ── Computed ──
-    get logNames() { return Object.keys(this.logBuffers).length ? Object.keys(this.logBuffers) : ['auth', 'g2g_worker', 'eldo_worker', 'coordinator', 'g2g_scanner', 'eldo_scanner', 'watchdog', 'dashboard'] },
+    get logNames() { return Object.keys(this.logBuffers).length ? Object.keys(this.logBuffers) : ['auth', 'g2g_worker', 'eldo_worker', 'coordinator', 'g2g_scanner', 'eldo_scanner', 'watchdog', 'dashboard', 'status_sync'] },
     get filteredLogLines() {
       const lines = this.logBuffers[this.activeLog] || [];
       if (this.logFilter === 'all') return lines;
@@ -534,9 +534,7 @@ function dashboard() {
         this.evtSource.addEventListener('status', (e) => {
           try {
             const data = JSON.parse(e.data);
-            const map = {};
-            (data.services || []).forEach(s => map[s.id] = s);
-            this.services = this._buildSortedServices(map);
+            this.services = this._buildSortedServices(data.services);
             this.staleCount = data.stale_count || 0;
           } catch(ex) {}
         });
@@ -600,27 +598,18 @@ function dashboard() {
       }
     },
 
-    _buildSortedServices(map) {
-      const defs = [
-        {id:'auth_service',name:'Auth Service',tier:0},
-        {id:'worker_eldo',name:'Eldo Worker',tier:1},
-        {id:'worker_g2g',name:'G2G Worker',tier:1},
-        {id:'coordinator',name:'Coordinator',tier:2},
-        {id:'scanner_eldorado',name:'Eldo Scanner',tier:3},
-        {id:'scanner_g2g',name:'G2G Scanner',tier:3},
-        {id:'dashboard',name:'Dashboard',tier:3},
-      ];
-      defs.sort((a,b) => a.tier - b.tier || a.name.localeCompare(b.name));
-      return defs.map(d => {
-        const s = map[d.id] || {};
-        return {
-          id: d.id, name: d.name, tier: d.tier,
-          pid: s.pid || null,
-          last_beat: s.last_beat || null,
-          status: s.status || 'unknown',
-          age_seconds: s.age_seconds != null ? s.age_seconds : null,
-        };
-      });
+    _buildSortedServices(list) {
+      // The roster lives in dashboard/server.py SERVICES and arrives already sorted
+      // by (tier, name). This used to be a hardcoded copy of that dict, so a service
+      // added server-side stayed invisible here — status_sync was missing for exactly
+      // that reason. Render straight from the payload so the two cannot drift again.
+      return (list || []).map(s => ({
+        id: s.id, name: s.name, tier: s.tier,
+        pid: s.pid || null,
+        last_beat: s.last_beat || null,
+        status: s.status || 'unknown',
+        age_seconds: s.age_seconds != null ? s.age_seconds : null,
+      }));
     },
 
     // ── Tab switching ──
