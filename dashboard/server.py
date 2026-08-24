@@ -42,10 +42,13 @@ SERVICES = {
     "scanner_eldorado": {"name": "Eldorado Scanner", "tier": 3},
     "scanner_g2g": {"name": "G2G Scanner", "tier": 3},
     "dashboard": {"name": "Dashboard", "tier": 3},
+    # Beats into the heartbeat table and is supervised by watchdog like the rest;
+    # it was just never listed here, so the dashboard showed 7 of 8 services.
+    "status_sync": {"name": "Status Sync", "tier": 3},
 }
 
 LOG_FILES = {
-    "auth": "/tmp/auth6.log",
+    "auth": "/tmp/auth.log",
     "g2g_worker": "/tmp/g2g_worker.log",
     "eldo_worker": "/tmp/eldo_worker.log",
     "coordinator": "/tmp/coordinator.log",
@@ -53,6 +56,7 @@ LOG_FILES = {
     "eldo_scanner": "/tmp/eldo_scanner.log",
     "watchdog": "/tmp/watchdog.log",
     "dashboard": "/tmp/dashboard.log",
+    "status_sync": "/tmp/status_sync.log",
 }
 
 STALE_THRESHOLD = 90
