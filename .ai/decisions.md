@@ -618,3 +618,21 @@ nên rẻ cho tripwire. List endpoint chỉ chạy khi có delta.
 - `Received` = customer đã confirm → giống `Delivered` về workflow ERP,
   không cần push thêm.
 - Còn lại 4 state là các trạng thái terminal/dispute thực sự cần sync.
+
+## 2026-08-31 — Proof upload: network/S3 fail → retry; chỉ ext-unsupported là terminal
+
+**Quyết định:** `_upload_proofs` tách bookkeeping 2 loại lỗi: ext không thuộc
+`_G2G_PROOF_EXTS` = terminal (giữ nguyên message hiện tại, nguyên văn); mọi lý do
+khác (no presigned URL, S3 upload fail, per-file exception) = retryable — raise
+APIError nhúng nguyên văn lỗi underneath, KHÔNG chứa từ "unsupported".
+
+**Ngữ cảnh:** 7 đơn 27/8–31/8 (6 đơn còn kẹt, 2 ERP 100+102) dính lỗi S3 tạm thời
+bị gán nhãn "unsupported file type" → terminal → không bao giờ retry, bằng chứng
+không lên G2G (đơn mới nhất SO-260831-J9JKWD4L / 1788181237562TQL6). W9GN được
+re-push tay 29/8 → Completed sau 5s, chứng tỏ chỉ cần retry là tự lành.
+
+**Implementation:** sửa `shared/g2g_api.py::_upload_proofs` (split 2 list
+`unsupported`/`failed`, raise theo priority failed > unsupported). KHÔNG đụng
+`_classify_error`/`_TERMINAL_KEYWORDS` — fix gửi đúng message thay vì nới
+classification. Data-ops re-push 6 đơn kẹt qua `scripts/retry_post_evidence.py`
+(cần thêm param host cho ERP 102).

@@ -6,7 +6,10 @@ The Sell Order's workflow is already past `Deliver`, so the bot must skip the
 qty step — the script always passes `skip_steps=['qty']`.
 
 Usage (from Windows host):
-    python scripts/retry_post_evidence.py <order_id> [<order_id> ...]
+    python scripts/retry_post_evidence.py <order_id> [<order_id> ...] [--erp 100|102]
+
+Orders live on either ERP (both dispatch into the same .220 worker):
+--erp 100 → erp.gegeteam.net (default) · --erp 102 → currency.gegeteam.net
 
 The script:
   1. SSH to ERP (192.168.2.100) — looks up Sell Order name for each external_order_id
@@ -32,7 +35,12 @@ import paramiko
 
 sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 
-ERP_HOST = "192.168.2.100"
+# Both ERPs dispatch into the same worker on .220 — pick with --erp (site is
+# derived per host so the pair can never mismatch).
+ERPS = {
+    "100": ("192.168.2.100", "erp.gegeteam.net"),
+    "102": ("192.168.2.102", "currency.gegeteam.net"),
+}
 ERP_USER = "root"
 ERP_PASS = "123456"
 BOT_HOST = "192.168.2.220"
@@ -67,13 +75,13 @@ def active_worker_log(ssh, pattern):
     return out.strip() or f"/tmp/{pattern}.log"
 
 
-def lookup_sell_orders(erp_ssh, order_ids):
+def lookup_sell_orders(erp_ssh, order_ids, site):
     """Look up SO name + sell_channel for each external_order_id.
     Returns dict {order_id: {'so': str, 'channel': str, 'state': str}} or None per id."""
     sftp = erp_ssh.open_sftp()
     script_lines = [
         'import frappe, json',
-        'frappe.init(site="erp.gegeteam.net")',
+        f'frappe.init(site={site!r})',
         'frappe.connect()',
         'frappe.set_user("Administrator")',
         'ids = ' + repr(list(order_ids)),
@@ -112,7 +120,7 @@ def lookup_sell_orders(erp_ssh, order_ids):
     return result
 
 
-def call_post_evidence(erp_ssh, so_name):
+def call_post_evidence(erp_ssh, so_name, site):
     """Run `post_evidence_to_marketplace(so, skip_steps='[\"qty\"]')` via bench env python.
     The function raises WorkflowTransitionError AFTER worker has accepted — treat that
     specific exception as benign. Returns (worker_accepted_bool, raw_output_str)."""
@@ -123,7 +131,7 @@ def call_post_evidence(erp_ssh, so_name):
     sftp = erp_ssh.open_sftp()
     body = (
         'import frappe, sys, traceback\n'
-        'frappe.init(site="erp.gegeteam.net")\n'
+        f'frappe.init(site={site!r})\n'
         'frappe.connect()\n'
         'frappe.set_user("Administrator")\n'
         'from gege_custom.gege_custom.api.botpastedon import post_evidence_to_marketplace\n'
@@ -196,14 +204,18 @@ def wait_for_terminal(order_id, buf, timeout_sec=90):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("order_ids", nargs="+", help="One or more external_order_id values")
+    parser.add_argument("--erp", choices=sorted(ERPS), default="100",
+                        help="ERP server the orders live on: 100 (erp.gegeteam.net, default) "
+                             "or 102 (currency.gegeteam.net)")
     parser.add_argument("--per-order-timeout", type=int, default=90,
                         help="Seconds to wait per order for terminal log line (default 90)")
     args = parser.parse_args()
 
     order_ids = args.order_ids
-    print(f"Processing {len(order_ids)} order(s).\n")
+    erp_host, erp_site = ERPS[args.erp]
+    print(f"Processing {len(order_ids)} order(s) on ERP {args.erp} ({erp_host} / {erp_site}).\n")
 
-    erp = ssh_connect(ERP_HOST, ERP_USER, ERP_PASS)
+    erp = ssh_connect(erp_host, ERP_USER, ERP_PASS)
     bot = ssh_connect(BOT_HOST, BOT_USER, BOT_PASS)
 
     # Find which log files the live workers write to
@@ -222,7 +234,7 @@ def main():
 
     # 1. Look up SO names
     print(">>> Looking up Sell Orders ...")
-    so_map = lookup_sell_orders(erp, order_ids)
+    so_map = lookup_sell_orders(erp, order_ids, erp_site)
 
     summary = []
     for oid in order_ids:
@@ -242,7 +254,7 @@ def main():
             summary.append((oid, so_name, "cancelled"))
             continue
 
-        accepted, raw = call_post_evidence(erp, so_name)
+        accepted, raw = call_post_evidence(erp, so_name, erp_site)
         if not accepted:
             short = " | ".join(l for l in raw.splitlines() if l)[:300]
             print(f"  -> ERP call did NOT report worker-accepted. raw: {short}")

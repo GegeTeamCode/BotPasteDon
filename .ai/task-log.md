@@ -105,3 +105,20 @@ mới nhất ở trên cùng.
 - `fix(auth): auto-cleanup browser locks and rotate Eldo profiles in isolated threads` — `4dd5bb1`
 - `refactor: multi-process architecture with API scanners, workers, docs` — `7228585`
 - (xa hơn xem `git log`)
+
+## 2026-08-31
+
+- Điều tra "đơn chưa trả bằng chứng" (SO-260831-J9JKWD4L / 1788181237562TQL6):
+  ERP side đủ flow (Delivered/Completed + ALE + kho), worker .220 download file
+  + submit qty OK, nhưng upload proof lên S3 G2G fail mạng tạm thời → bị gán
+  nhãn "unsupported file type" → terminal, no retry. Quét log: 7 đơn 27/8–31/8,
+  6 còn kẹt (4 trên ERP .100, 2 trên .102). Refresh `.ai/current-plan.md`:
+  thêm Phase A re-push 6 đơn + bảng chứng cứ; Phase B giữ thiết kế fix 29/8.
+  Chưa code — chờ duyệt.
+
+- `fix(g2g): retry transient proof-upload failures instead of mislabeling them terminal` — `36dc4bb`
+  - `_upload_proofs` tách bookkeeping `unsupported`/`failed`; 0 file upload được
+    thì raise theo priority failed (retry, nhúng lỗi underneath) > unsupported
+    (terminal, giữ nguyên văn). Verify classification bằng AST-isolated
+    `_classify_error`: S3/connection → network, webp/heic → terminal.
+  - `docs/proof_mechanism.md` sync phân loại lỗi mới (doc-sync trước commit).
