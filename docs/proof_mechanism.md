@@ -49,8 +49,14 @@
 - **Ext cho phép** (`_G2G_PROOF_EXTS`): `jpg, jpeg, png, gif, mp4, mov`. Khác → G2G trả
   HTTP 400 "unsupported file type" → **skip từng file** (per-file isolation; 1 file webp
   hỏng không phá cả bước — fix order LVB9).
-- **Nếu TẤT CẢ file fail/unsupported → `APIError` terminal** ("manual upload needed"):
-  KHÔNG complete đơn thiếu proof, KHÔNG loop vô hạn.
+- **Phân loại lỗi khi 0 file upload được** (fix 2026-08-31, bug 27–31/8: lỗi S3 tạm thời
+  bị gán nhãn "unsupported" → terminal → 7 đơn kẹt không proof):
+  - `failed` (không có presigned URL, S3/network lỗi từng file) → `APIError` **retry**
+    (message nhúng nguyên văn lỗi underneath để `_classify_error` xếp network/unknown —
+    đều vào nhánh retry của worker).
+  - Chỉ còn `unsupported` (ext xấu) → giữ message terminal "manual upload needed"
+    nguyên văn: KHÔNG complete đơn thiếu proof, KHÔNG loop vô hạn.
+  - ≥1 file upload được → submit như thường, log kèm số unsupported/failed.
 - Thứ tự bước giao: qty → proof → chat (`handle_g2g_api`).
 
 ### Selenium fallback — `handle_g2g` (g2g_worker.py:414)
