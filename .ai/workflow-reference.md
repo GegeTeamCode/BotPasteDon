@@ -54,7 +54,7 @@ Read context from .ai/ and the relevant source files. Then:
    Acceptance criteria / Risks).
 2. List the exact files you intend to change.
 3. Flag whether this touches sensitive areas (auth/main.py, shared/database.py,
-   scanners/main.py, status_sync/*, coordinator/*) -> needs Opus review.
+   scanners/main.py, status_sync/*) -> needs Opus review.
 Do NOT write code. Stop after the plan for my approval.
 ```
 

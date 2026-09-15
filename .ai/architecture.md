@@ -3,32 +3,29 @@
 > Nguồn sự thật đầy đủ: [`docs/architecture.md`](../docs/architecture.md).
 > File này tóm tắt phần một agent cần biết trước khi sửa code.
 
-## 9 services (1 instance mỗi loại, no port reuse)
+## 8 services (1 instance mỗi loại, no port reuse)
 
 | Process | Port | Entry | Vai trò 1-câu |
 |---|---|---|---|
 | Auth | 8010 | `python -m auth.main` | Capture + serve G2G JWT + Eldo cookies, refresh tự động |
-| Eldo Scanner | – | `python -m scanners.main --platform eldorado` | Poll pending orders, push Discord + ERP `new_order` |
+| Eldo Scanner | – | `python -m scanners.main --platform eldorado` | Poll pending orders, push ERP `new_order` |
 | G2G Scanner | – | `python -m scanners.main --platform g2g` | (same — G2G version) |
 | Eldo Worker | 8001 | `python -m workers.eldorado_worker` | Mark delivered, upload proof (Firebase), chat TalkJS |
 | G2G Worker | 8002 | `python -m workers.g2g_worker` | Submit qty, upload proof (S3), chat Sendbird |
-| Coordinator | 8030 | `python -m coordinator.main` | Discord bot, dispatch task→workers, recovery |
 | Status Sync | – | `python -m status_sync` | Poll marketplace state (30 min), push ERP `status_update` |
 | Dashboard | 8766 | `python -m dashboard.server` | SSE log viewer, OTP relay, /health cards |
 | Watchdog | – | `python scripts/watchdog.py` | Heartbeat poll → auto-restart crashed service |
 
-Startup order matters: `Auth → Workers → Coordinator → Scanners → Status Sync → Watchdog → Dashboard`.
+Startup order matters: `Auth → Workers → Scanners → Status Sync → Watchdog → Dashboard`.
 
 ## Data flow
 
 ```
 Eldo API ──► Eldo Scanner ──┐
-G2G  API ──► G2G  Scanner ──┼─► Discord webhook (per-game channel)
-                            └─► ERP new_order  → creates Sell Order
+G2G  API ──► G2G  Scanner ──┴─► ERP new_order  → creates Sell Order (.100 / .102)
 
-Coordinator (Discord bot) ◄── webhook ──► creates per-order thread
-                          ├─ POST /task ─► Eldo Worker :8001
-                          └─ POST /task ─► G2G  Worker :8002
+ERP (trader works the Sell Order) ─┬─ POST /task ─► Eldo Worker :8001
+                                  └─ POST /task ─► G2G  Worker :8002
 
 Auth :8010 ◄── all processes fetch JWT/cookies here (curl_cffi)
 SQLite WAL ◄── shared write target; thread-safe via shared/database.py

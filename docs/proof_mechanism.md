@@ -5,7 +5,7 @@
 
 ## TL;DR
 
-- **2 nguồn file proof** (chung cả 2 sàn): (1) operator đính kèm qua nút Discord → lưu
+- **2 nguồn file proof** (chung cả 2 sàn): (1) [ĐÃ GỠ 2026-09-15] nút Discord → lưu
   `proofs/`; (2) ERP gửi `file_info` dict → worker tải về `/tmp/erp_evidence_*`.
 - **G2G**: proof là **delivery_proof CHÍNH THỨC** trên marketplace (upload S3 presigned).
   **Bắt buộc** — thiếu proof thì đơn terminal, không complete.
@@ -18,7 +18,7 @@
 
 ## 1. Nguồn file proof (2 luồng nạp)
 
-### 1a. Discord-button (thủ công, legacy)
+### 1a. Discord-button (ĐÃ GỠ 2026-09-15 cùng coordinator — chỉ còn để tham khảo)
 `coordinator/discord_bot.py:138-175` (và `workers/base_worker.py:113-122` bản tương tự):
 - Operator đính kèm ảnh/video vào Discord thread → bấm nút **"🚀 Đã giao (Gửi Proof)"**.
 - Coordinator quét `thread.history`, lọc ext `.png/.jpg/.jpeg/.mp4`, lưu vào

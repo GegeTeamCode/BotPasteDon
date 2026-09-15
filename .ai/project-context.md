@@ -2,19 +2,18 @@
 
 - **Tên dự án:** BotPasteDon
 - **Mục tiêu (1–2 câu):** Tự động hóa toàn bộ vòng đời đơn hàng trên hai
-  marketplace **Eldorado.gg** và **G2G.com** — từ phát hiện đơn, thông báo
-  trader trên Discord, giao hàng tự động (qua API hoặc Selenium fallback),
+  marketplace **Eldorado.gg** và **G2G.com** — từ phát hiện đơn, đẩy đơn
+  vào ERP cho trader, giao hàng tự động (qua API hoặc Selenium fallback),
   cho tới đồng bộ trạng thái sang ERP nội bộ (Frappe/ERPNext).
 - **Người dùng/khách hàng:** Đội trader của shop game (GegeTeam). Trader làm
-  việc qua các thread Discord do bot tạo; bot tự xử lý phần còn lại.
+  việc trên ERP (Sell Order); bot tự xử lý phần còn lại.
 - **Stack:**
   - Python 3.10+
-  - Process model: 9 service độc lập, giao tiếp HTTP + shared SQLite
-  - Async HTTP: `aiohttp` (auth/workers/coordinator/dashboard)
+  - Process model: 8 service độc lập, giao tiếp HTTP + shared SQLite
+  - Async HTTP: `aiohttp` (auth/workers/dashboard)
   - Marketplace API: `curl_cffi` với browser impersonation (chrome120/136)
   - Browser automation: `selenium` (Chrome CDP cho G2G JWT capture) +
     `camoufox` (anti-detect Firefox cho Eldorado capture)
-  - Discord: `discord.py`
   - SSH/deploy: `paramiko` (KHÔNG dùng `sshpass` hay `ssh ... <<<password`)
   - Storage: SQLite WAL ở `data/orders.db`, thread-safe wrapper trong
     `shared/database.py`
@@ -68,7 +67,7 @@
 
 ```
 ┌─ Bot LXC (192.168.2.220)
-│  └─ /opt/BotPasteDon → 9 services (auth/scanner×2/worker×2/coordinator/
+│  └─ /opt/BotPasteDon → 8 services (auth/scanner×2/worker×2/
 │                                     status_sync/dashboard/watchdog)
 │  └─ chrome_profile_eldo{,_bak1,_bak2} — Cognito session, RefreshToken ~30d
 │  └─ chrome_profile_g2g                — Selenium login, JWT refresh 13min

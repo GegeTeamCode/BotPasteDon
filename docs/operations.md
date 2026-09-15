@@ -72,7 +72,6 @@ nohup venv/bin/python scripts/watchdog.py > /tmp/watchdog.log 2>&1 &   # restart
 | Auth | 8010 | `python -m auth.main` |
 | Eldo Worker | 8001 | `python -m workers.eldorado_worker` |
 | G2G Worker | 8002 | `python -m workers.g2g_worker` |
-| Coordinator | 8030 | `python -m coordinator.main` |
 | Status Sync | – | `python -m status_sync` (no port — polls every 30m) |
 | Dashboard | 8766 | `python -m dashboard.server` |
 
@@ -91,8 +90,6 @@ sleep 5
 nohup venv/bin/python -u -m workers.eldorado_worker > /tmp/eldo_worker.log 2>&1 &
 nohup venv/bin/python -u -m workers.g2g_worker > /tmp/g2g_worker.log 2>&1 &
 sleep 3
-nohup venv/bin/python -u -m coordinator.main > /tmp/coordinator.log 2>&1 &
-sleep 3
 nohup venv/bin/python -u -m scanners.main --platform g2g > /tmp/g2g_scanner.log 2>&1 &
 nohup venv/bin/python -u -m scanners.main --platform eldorado > /tmp/eldo_scanner.log 2>&1 &
 nohup venv/bin/python scripts/watchdog.py > /tmp/watchdog.log 2>&1 &
@@ -107,7 +104,7 @@ python scripts/check_all_processes.py
 # In bang services + PIDs + ports + heartbeat. Bao DUP/DOWN/NO-PORT neu sai.
 
 # Kiem tra tat ca process truc tiep tren server
-ps aux | grep -E "scanner|worker|auth|coordinator|dashboard|watchdog" | grep -v grep
+ps aux | grep -E "scanner|worker|auth|dashboard|watchdog" | grep -v grep
 
 # Kiem tra auth service
 curl -s http://localhost:8010/health
@@ -177,7 +174,6 @@ Tat ca logs ra stdout, redirect vao `/tmp/`:
 | G2G Scanner | `/tmp/g2g_scanner.log` |
 | Eldo Worker | `/tmp/eldo_worker.log` |
 | G2G Worker | `/tmp/g2g_worker.log` |
-| Coordinator | `/tmp/coordinator.log` |
 | Status Sync | `/tmp/status_sync.log` |
 | Dashboard | `/tmp/dashboard.log` |
 | Watchdog | `/tmp/watchdog.log` |
@@ -210,7 +206,7 @@ python scripts/deploy_git.py all                    # sync + restart tat ca (nan
 ```
 
 Service hop le: `auth, scanner_g2g, scanner_eldo, worker_g2g, worker_eldo,
-coordinator, dashboard`. Script tu stop watchdog truoc, restart service, restart
+dashboard, status_sync`. Script tu stop watchdog truoc, restart service, restart
 watchdog cuoi. Repo `.env.example` → server `.env` van giu (gitignore).
 
 **QUY TAC VANG — khong sua code TRUC TIEP tren server.** Lam vay tao "drift" (server
@@ -796,7 +792,7 @@ ssh root@192.168.2.220 "pkill -f open_eldo_vnc.py ; pkill -f camoufox-bin"
 
 ```bash
 # Tim duplicate
-ps aux | grep -E "scanner|worker|auth|coordinator" | grep -v grep | sort
+ps aux | grep -E "scanner|worker|auth" | grep -v grep | sort
 
 # Kill tat ca, restart lai
 bash scripts/stop.sh
@@ -890,8 +886,8 @@ Tat ca scripts trong `scripts/`. Naming convention:
 
 | Script | Muc dich | Khi nao chay |
 |--------|----------|--------------|
-| [`start.sh`](../scripts/start.sh) | Start all 9 services theo thu tu phu thuoc (auth → workers → coordinator → scanners → status_sync → watchdog → dashboard). Mac dinh chay `cleanup()` truoc khi start; pass `--no-clean` de skip. | Sau reboot server hoac sau full stop |
-| [`stop.sh`](../scripts/stop.sh) | Stop all 9 services in reverse order (watchdog truoc, auth cuoi). Clean chromedriver/camoufox + 4 profile locks + free 5 ports. Filter bash launcher de tranh self-match. | Truoc khi reboot hoac maintenance lon |
+| [`start.sh`](../scripts/start.sh) | Start all 8 services theo thu tu phu thuoc (auth → workers → scanners → status_sync → watchdog → dashboard). Mac dinh chay `cleanup()` truoc khi start; pass `--no-clean` de skip. | Sau reboot server hoac sau full stop |
+| [`stop.sh`](../scripts/stop.sh) | Stop all 8 services in reverse order (watchdog truoc, auth cuoi). Clean chromedriver/camoufox + 4 profile locks + free 4 ports. Filter bash launcher de tranh self-match. | Truoc khi reboot hoac maintenance lon |
 | [`watchdog.py`](../scripts/watchdog.py) | Long-running supervisor — check heartbeat moi 30s, restart service neu khong beat trong 90s. Chay duoi `bot-watchdog.service` (`Restart=always`) nen tu duoc systemd giam sat; start.sh `systemctl start`, stop.sh `systemctl stop` truoc khi kill. **Chi MOT launcher** — khong enable `bot-*.service` per-service song song (xem decisions.md 2026-06-13). | Luon chay (qua bot-watchdog.service) |
 
 ### Client-side ops — chay tu Windows host, dung paramiko vao server
@@ -916,7 +912,6 @@ Tat ca scripts trong `scripts/`. Naming convention:
 | Script | Test |
 |--------|------|
 | [`_smoke_retry_pending.py`](../scripts/_smoke_retry_pending.py) | PR1: error classifier (auth/network/terminal/unknown), backoff schedule, DB roundtrip (mark_retry_attempt + cleanup_old_orders exemption), state transitions. |
-| [`_smoke_dispatch_queue.py`](../scripts/_smoke_dispatch_queue.py) | PR2: coordinator dispatch retry queue — INSERT OR REPLACE reset, due-poll, mark_dispatch_attempt, backoff cap. |
 | [`_smoke_g2g_refresh.py`](../scripts/_smoke_g2g_refresh.py) | PR3: G2G backend refresh — `_g2g_backend_refresh` guards, `_jwt_claim` decode, `G2GAuth._try_backend_refresh` no-data path. |
 
 Chay tu Windows host: `python scripts/_smoke_<name>.py`. Khong can server, khong can network.

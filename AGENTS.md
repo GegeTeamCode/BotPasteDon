@@ -59,11 +59,10 @@ auto-load as skills: `review-diff` (diff review + when to escalate to Opus),
 
 ## Out of scope (do not touch without explicit approval)
 
-- `.env` files on any server — secrets, channel webhooks, ERP API keys
+- `.env` files on any server — secrets, ERP API keys
 - `data/orders.db` rows — never `DELETE` outside documented troubleshooting
   recipes in `docs/operations.md`
 - ERP `Sell Order` workflow_state on prod ERP (`192.168.2.100`)
-- Live Discord webhook URLs in `shared/config.py` SCANNER_CONFIG mappings
 - `chrome_profile_eldo*` on the bot server — live Cognito session; refresh only
   via the VNC re-login procedure in `docs/operations.md`
 - `auth/main.py` Eldorado capture/refresh path without first reading
@@ -75,4 +74,3 @@ auto-load as skills: `review-diff` (diff review + when to escalate to Opus),
 - `shared/database.py` — schema changes (production data lives here)
 - `scanners/main.py`, `status_sync/*` — ERP webhook payload (money fields
   `total_price`, `earning`, `channel_fee`); can mass-mutate `workflow_state`
-- `coordinator/*` — delivery dispatch (money flow)

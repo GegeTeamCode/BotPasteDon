@@ -5,6 +5,13 @@ mới nhất ở trên cùng.
 
 ---
 
+## 2026-09-15
+
+- `feat: remove Discord entirely — scanners push orders straight to ERP` — commit `180c0a8`, deploy .220
+  - Nguyên nhân: Discord 429 `Retry-After: 3000` làm scanner G2G ngủ 50 phút (đơn D4 `1789483309848K1UR` không vào ERP).
+  - Gỡ `coordinator/`, `discord_utils`, `DeliveryView`, `_notify_coordinator`, webhook config; thêm `shared/erp_client.py`;
+    NOTIFIED trước push ERP; alerts log-only; start/stop/watchdog/deploy_git/dashboard bỏ coordinator; `.env` .220 gỡ biến Discord.
+
 ## 2026-06-26
 
 - `feat(status_sync): ERP-driven reconcile + eldo dispute parity` — **CODE XONG, test 3/3, chờ commit+deploy**

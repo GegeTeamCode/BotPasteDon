@@ -2,18 +2,17 @@
 
 ## Tong quan
 
-BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao hang tren 2 marketplace: **Eldorado.gg** va **G2G.com**. Gom 9 process doc lap giao tiep qua HTTP API va shared SQLite database.
+BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao hang tren 2 marketplace: **Eldorado.gg** va **G2G.com**. Gom 8 process doc lap giao tiep qua HTTP API va shared SQLite database.
 
 ## Process Map
 
 | Process | Port | Entry Point | Vai tro |
 |---------|------|-------------|---------|
 | Auth Service | 8010 | `python -m auth.main` | Capture va serve G2G JWT + Eldo cookies |
-| Eldo Scanner | -- | `python -m scanners.main --platform eldorado` | Poll Eldo API, gui Discord + ERP webhook |
-| G2G Scanner | -- | `python -m scanners.main --platform g2g` | Poll G2G API, gui Discord + ERP webhook |
+| Eldo Scanner | -- | `python -m scanners.main --platform eldorado` | Poll Eldo API, push don moi vao ERP webhook |
+| G2G Scanner | -- | `python -m scanners.main --platform g2g` | Poll G2G API, push don moi vao ERP webhook |
 | Eldo Worker | 8001 | `python -m workers.eldorado_worker` | Thuc hien giao hang Eldorado |
 | G2G Worker | 8002 | `python -m workers.g2g_worker` | Thuc hien giao hang G2G |
-| Coordinator | 8030 | `python -m coordinator.main` | Discord bot, dispatch task den workers |
 | Status Sync | -- | `python -m status_sync` | Poll marketplace state (G2G + Eldo) → push ERP `status_update` mỗi 30 min |
 | Dashboard | 8766 | `python -m dashboard.server` | Web UI monitoring, OTP relay, logs |
 | Watchdog | -- | `python scripts/watchdog.py` | Auto-restart crashed services |
@@ -26,12 +25,11 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
        ▼                       ▼
   Eldo Scanner           G2G Scanner
        │                       │
-       ├─ Discord Webhook ────►│
-       ├─ ERP Webhook ────────►│
-       │                       │
-       ▼                       ▼
-  Coordinator (Discord Bot)
-       │
+       └──── ERP new_order ────┘
+                  │
+                  ▼
+  ERP (.100 main / .102 currency) — Sell Order, trader xu ly
+                  │
        ├── POST /task ──► Eldo Worker :8001
        └── POST /task ──► G2G Worker  :8002
 
@@ -88,18 +86,7 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 
 **`workers/talkjs_client.py`** — TalkJS WebSocket client (Phoenix Protocol). File upload qua Firebase Storage resumable upload.
 
-**`workers/base_worker.py`** — Shared utilities: `DeliveryView` (Discord buttons), file cleanup, thread locking.
-
-### coordinator/
-
-**`coordinator/discord_bot.py`** — Discord bot + HTTP callback server (port 8030).
-- Nhan webhook messages trong Discord channels
-- Tao per-order thread voi platform-specific buttons: "Giao nhanh" / "Gui bang chung"
-- Dispatch tasks den Workers qua `POST /task` voi order data, ERP URL, skip_steps
-- Startup recovery: re-process orders stuck in THREAD_CREATED
-- Lock/archive threads khi delivery complete
-
-**`coordinator/main.py`** — Thin entry point.
+**`workers/base_worker.py`** — Shared utilities: implicit-wait override, filename sanitizing, file cleanup.
 
 ### status_sync/
 
@@ -161,17 +148,17 @@ Every outcome (except `no_change` and `no_so` — too noisy) writes a `WS Activi
 
 | File | Mo ta |
 |------|-------|
-| `config.py` | Load .env, dinh ngha SCANNER_CONFIG (whitelist/blacklist, webhook routing, G2G title mapping, scan intervals) |
+| `config.py` | Load .env, dinh ngha SCANNER_CONFIG (whitelist/blacklist, G2G title mapping, scan intervals) |
 | `constants.py` | Order states, platform URLs, cache TTL, user-agent |
 | `database.py` | SQLite WAL, thread-safe. Tables: `orders` (lifecycle), `heartbeat` (monitoring), `marketplace_status` / `marketplace_state_counts` / `marketplace_disputes` (status_sync) |
-| `discord_utils.py` | `format_order_message`, `match_webhook`, `send_discord_webhook`, `send_erp_webhook` |
+| `erp_client.py` | `send_erp_webhook` — POST don moi vao ERP `new_order` (retry + backoff) |
 | `driver_manager.py` | Chrome WebDriver factory voi anti-detection |
 | `eldo_api.py` | Eldo REST client (curl_cffi). Pending orders, detail, deliver, TalkJS auth, game library |
 | `eldo_auth.py` | Eldo auth manager. Fetch cookies + XSRF tu auth service, 5-min cache |
 | `g2g_api.py` | G2G REST client (curl_cffi). Pending orders, detail, deliver, S3 upload, Sendbird chat |
 | `g2g_auth.py` | G2G auth manager. Fetch JWT tu auth service, 5-min cache |
 | `logging_config.py` | Structured logging: `[HH:MM:SS][logger] LEVEL: message`, flush after every emit |
-| `order_state.py` | State machine: DETECTED → NOTIFIED → THREAD_CREATED → DELIVERING → COMPLETED |
+| `order_state.py` | State machine: DETECTED → NOTIFIED → DELIVERING → COMPLETED |
 
 ## Keyword Filtering
 
@@ -182,13 +169,7 @@ Scanner loc don hang qua 2 layer:
 - **Eldorado**: filter tren `item_name + offerTitle + gameCategoryTitle`
 - **G2G**: filter tren `title` (Gold orders auto-pass khi `unit_name` co "gold")
 
-Don bi loc → insert DB voi status DETECTED (khong gui webhook).
-
-## Webhook Routing
-
-`match_webhook()` trong `discord_utils.py`:
-- First-keyword-match tren `game_name + item_name`
-- Thu tu mapping quyet dinh: Diablo 4 → PoE2 → PoE1 → Default
+Don bi loc → insert DB voi status DETECTED (khong push ERP).
 
 ## ERP Integration
 
@@ -198,7 +179,9 @@ Scanner gui `POST` den ERP webhook cho moi don moi:
 - Required fields: `orderId`, `platform`
 - Pricing: `total_price`, `unit_price`, `earning`, `channel_fee`, `channel_fee_rate`
 
-ERP tao Sell Order trong Frappe/ERPNext. Worker callback khi giao xong.
+ERP tao Sell Order trong Frappe/ERPNext; trader xu ly tren ERP, ERP dispatch task giao hang thang den worker (`POST /task`). Routing: PoE/PoE2/Torchlight → .102, con lai → .100.
+
+**Discord da go hoan toan 2026-09-15** (coordinator, webhook thong bao, nut giao hang, ops alert). Truoc do scanner gui Discord TRUOC khi push ERP; Discord tra 429 `Retry-After: 3000` lam scanner G2G dung 50 phut. Xem `.ai/decisions.md`.
 
 ## Database Schema
 
@@ -214,8 +197,8 @@ CREATE TABLE orders (
     quantity TEXT,
     character TEXT,
     customer_name TEXT,
-    discord_thread_id TEXT,
-    discord_channel_id TEXT,
+    discord_thread_id TEXT,        -- legacy (Discord era), khong con ghi
+    discord_channel_id TEXT,       -- legacy
     webhook_sent_at DATETIME,
     delivery_started_at DATETIME,
     delivery_completed_at DATETIME,
@@ -276,9 +259,11 @@ CREATE TABLE marketplace_disputes (
 ## Order State Machine
 
 ```
-DETECTED → NOTIFIED → THREAD_CREATED → DELIVERING → COMPLETED
-    │                                        │
-    └─── (keyword filtered, no webhook)      └─── FAILED → retry from previous state
+DETECTED → NOTIFIED → DELIVERING → COMPLETED
+    │          │             │
+    │          │             └─── FAILED / RETRY_PENDING → worker retry
+    │          └─── erp_synced 0/1/2 — erp_retry_loop retry khi push ERP fail
+    └─── (keyword filtered, khong push ERP)
 ```
 
 ## Auth Architecture

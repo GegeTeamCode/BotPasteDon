@@ -17,8 +17,7 @@ than what the rest of the repo already practices.
 ```
 auth/         — singleton service per process (HTTP server on :8010)
 scanners/     — long-running poll loops; one per --platform
-workers/      — HTTP servers receiving Coordinator dispatch
-coordinator/  — Discord bot + HTTP server (no Discord state in workers)
+workers/      — HTTP servers receiving ERP task dispatch (POST /task)
 status_sync/  — long-running async cycle, async runner in main.py
 shared/       — imported by everyone; no app-specific config here
 scripts/      — operational scripts (start.sh, watchdog, check_*)
@@ -150,7 +149,6 @@ def reading_method(self, …) -> List[Dict]:
    - `auth/main.py` — auth capture/refresh
    - `shared/database.py` — schema changes
    - `scanners/main.py`, `status_sync/*` — webhook payload composition
-   - `coordinator/*` — dispatch logic (money flow)
 3. **Nếu diff > 200 dòng** đổi behavior → khuyến nghị Opus review.
 4. **Refactor / docs / test chỉ** → GLM Reviewer, bỏ qua Opus.
 5. **Tỷ lệ mục tiêu**: ~95% review bằng GLM / ~5% cần Opus.

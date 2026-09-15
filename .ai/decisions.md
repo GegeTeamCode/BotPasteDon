@@ -5,6 +5,28 @@ Mới nhất ở trên cùng.
 
 ---
 
+## 2026-09-15 — Gỡ Discord hoàn toàn khỏi BotPasteDon
+
+**Quyết định:** Bỏ toàn bộ Discord: coordinator (bot + callback `:8030` + hàng đợi
+`pending_dispatches`), webhook thông báo đơn theo game, nút giao hàng trong thread, ops alert
+qua Discord. Scanner chỉ còn push ERP (`shared/erp_client.py`); ops alert chỉ ghi log. Owner
+chốt: "không còn làm trên Discord nữa".
+
+**Ngữ cảnh:** `send_order_webhook` gửi Discord TRƯỚC rồi mới push ERP, và gặp 429 thì
+`sleep(Retry-After)` không trần. 15/09 21:48 Discord trả `Retry-After: 3000` → scanner G2G ngủ
+50 phút: đơn D4 `1789483309848K1UR` không vào ERP, không đơn mới nào được quét. Đơn nằm
+`DETECTED` nên `erp_retry_loop` (bỏ qua DETECTED) cũng không cứu. Giao hàng thực tế đã chạy
+ERP → worker `POST /task` (5 ngày chỉ 1 task đi qua coordinator).
+
+**Hành vi đổi kèm:** scanner set `NOTIFIED` ngay sau insert, TRƯỚC khi push ERP, để push fail
+vẫn được `erp_retry_loop` retry. Cột `discord_*` giữ trong schema (dữ liệu cũ); status
+`THREAD_CREATED` chỉ còn trên row cũ.
+
+**Alternative đã loại:** đảo thứ tự ERP trước Discord + chặn trần Retry-After — vẫn giữ một
+phụ thuộc ngoài không còn ai dùng.
+
+---
+
 ## 2026-06-27 — Manual paste endpoint (ERP chủ động paste 1 đơn theo ID)
 
 **Quyết định:** Mỗi scanner process (API mode) mở thêm HTTP listener

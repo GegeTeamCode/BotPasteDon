@@ -36,7 +36,7 @@ Tất cả I/O đi qua `shared/database.py::Database` (~640 dòng). Không proce
 SQL trực tiếp vào `orders.db` ngoài class này (chỉ vài script `tests/` đọc tay).
 
 - **Mỗi process khởi tạo một `Database(DATABASE_PATH)` riêng** (scanner, worker,
-  coordinator, status_sync, auth, dashboard, watchdog — xem bảng mục 4).
+  status_sync, auth, dashboard, watchdog — xem bảng mục 4).
 - Mỗi lời gọi method **mở connection mới rồi đóng** (`_get_conn()` →
   `conn.close()` trong `finally`). Không pool.
 - PRAGMA: `journal_mode=WAL`, `busy_timeout=5000`, `row_factory=Row`.
@@ -50,12 +50,12 @@ SQL trực tiếp vào `orders.db` ngoài class này (chỉ vài script `tests/`
 
 | Bảng | rows (24/6) | Nội dung | Process GHI |
 |---|---|---|---|
-| `orders` | 179 | Vòng đời từng đơn (state machine + cờ ERP) | **scanner**, **worker**, **coordinator** |
+| `orders` | 179 | Vòng đời từng đơn (state machine + cờ ERP) | **scanner**, **worker** |
 | `heartbeat` | 8 | Nhịp sống mỗi service (watchdog đọc) | **mọi** process |
 | `marketplace_status` | 13 450 | State marketplace từng đơn + cờ đã push ERP | **status_sync** |
 | `marketplace_state_counts` | 13 | Đếm số đơn theo state (snapshot dashboard) | **status_sync** |
 | `marketplace_disputes` | 244 | Case tranh chấp G2G | **status_sync** (g2g) |
-| `pending_dispatches` | 0 | Hàng đợi retry dispatch coordinator→worker | **coordinator** |
+| `pending_dispatches` | 0 | **Đã bỏ 2026-09-15** cùng coordinator (bảng cũ còn trên prod, không ai đọc/ghi) | — |
 | `test_t` | 0 | **RÁC** (bảng test sót lại) | — (cleanup) |
 
 ## 4. Phần code nào CẬP NHẬT database (theo process)
@@ -66,8 +66,8 @@ Liệt kê đầy đủ các method ghi (INSERT/UPDATE/DELETE) và nơi gọi:
 | Method | Vị trí gọi | Tác dụng |
 |---|---|---|
 | `insert_order` | `g2g_scanner_api.py:78`, `eldorado_scanner_api.py:70`, `base_scanner.py:294`, `main.py:145/196/248` | Tạo đơn mới status `DETECTED` (`INSERT OR IGNORE`) |
-| `update_order_status` | `base_scanner.py:308`, `main.py:150/200/252` | → `NOTIFIED` sau khi webhook OK |
-| `claim_erp_order` / `mark_erp_synced` / `release_erp_order` / `increment_erp_retry` | `main.py:63-112` (`send_order_webhook` + `erp_retry_loop`) | Cờ đồng bộ ERP (0/1/2 + retry count) |
+| `update_order_status` | `base_scanner.py:308`, `main.py:150/200/252` | → `NOTIFIED` ngay sau insert, TRƯỚC khi push ERP (để `erp_retry_loop` retry được) |
+| `claim_erp_order` / `mark_erp_synced` / `release_erp_order` / `increment_erp_retry` | `main.py:63-112` (`push_order_to_erp` + `erp_retry_loop`) | Cờ đồng bộ ERP (0/1/2 + retry count) |
 | `cleanup_old_orders` | `base_scanner.py:142`, `main.py:136/189` | Xoá COMPLETED quá hạn + DETECTED >24h |
 | `update_heartbeat` | `main.py:163/213/260` | Nhịp `scanner_{platform}` |
 
@@ -77,13 +77,6 @@ Liệt kê đầy đủ các method ghi (INSERT/UPDATE/DELETE) và nơi gọi:
 | `update_order_status` | g2g `193/205/223/235`, eldo `131-173` | `DELIVERING` → `COMPLETED` / `FAILED` |
 | `mark_retry_attempt` | g2g `243` | → `RETRY_PENDING` + bump retry_count |
 | `update_heartbeat` | g2g `553`, eldo `640` | Nhịp `worker_g2g` / `worker_eldo` |
-
-### Coordinator (`coordinator/discord_bot.py`)
-| Method | Vị trí | Tác dụng |
-|---|---|---|
-| `update_order_status` | `286/332` | → `THREAD_CREATED` (kèm discord_thread_id) |
-| `queue_dispatch` / `mark_dispatch_attempt` / `remove_dispatch` | `186/421/394-411` | Quản hàng đợi retry dispatch task |
-| `update_heartbeat` | `483` | Nhịp `coordinator` |
 
 ### Status Sync (`status_sync/g2g_sync.py`, `eldo_sync.py`, `reconcile.py`, `main.py`)
 | Method | Vị trí | Tác dụng |
@@ -102,16 +95,15 @@ Liệt kê đầy đủ các method ghi (INSERT/UPDATE/DELETE) và nơi gọi:
 | Watchdog (`scripts/watchdog.py:199`) | **đọc** `get_stale_services` (không ghi nghiệp vụ) |
 
 **Tóm tắt quyền ghi:**
-- `orders` ← scanner (tạo + ERP flag), worker (delivery), coordinator (thread).
+- `orders` ← scanner (tạo + ERP flag), worker (delivery).
 - `marketplace_*` + `disputes` ← chỉ status_sync.
-- `pending_dispatches` ← chỉ coordinator.
 - `heartbeat` ← mọi process.
 
 ## 5. Vòng đời bản ghi `orders` (state machine)
 
 ```
-            scanner                 coordinator         worker
- (API scan) ─► DETECTED ─webhook─► NOTIFIED ─► THREAD_CREATED ─► DELIVERING ─► COMPLETED
+            scanner                                  worker
+ (API scan) ─► DETECTED ─insert─► NOTIFIED ─(ERP dispatch)─► DELIVERING ─► COMPLETED
                   │ (rớt filter:                                      │
                   │  ở lại DETECTED,                                  ├─► FAILED
                   │  xem order_filtering.md)                          └─► RETRY_PENDING ─► (worker retry)

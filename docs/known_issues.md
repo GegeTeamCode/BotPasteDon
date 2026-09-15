@@ -86,7 +86,7 @@ rm -f /opt/BotPasteDon/orders.db /opt/BotPasteDon/scanners/orders.db
 
 > **2 đơn cụ thể (`...QY7W`, `...AP02`, 31/05):** code webhook ERP lúc đó (2 ngày sau
 > go-live) còn nhiều lỗi → **BỎ QUA** (user quyết, không backfill).
-> **Cơ chế chung (đã hardening, commit kèm):** `send_erp_webhook` (`discord_utils.py`)
+> **Cơ chế chung (đã hardening, commit kèm):** `send_erp_webhook` (nay ở `shared/erp_client.py`)
 > trước đây `return True` cho **mọi HTTP 200** bất kể `status` body → false-sync nếu ERP trả
 > 200-không-tạo. Hiện `new_order` chỉ trả `ok`/`duplicate` (200) hoặc throw nên vô hại, nhưng
 > đã siết: chỉ `status in (ok, duplicate)` mới `erp_synced=1`; 200 khác → log warning + để

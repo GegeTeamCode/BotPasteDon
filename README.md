@@ -16,14 +16,13 @@ Multi-process bot tu dong hoa quat don va giao hang tren **Eldorado.gg** va **G2
    │  Eldo Scanner (API) │                      │   G2G Scanner (API) │
    │  Poll pending orders│                      │   Poll pending orders│
    └─────────┬───────────┘                      └──────────┬──────────┘
-             │ Discord Webhook + ERP                       │
+             │ ERP new_order webhook                       │
              ▼                                             ▼
    ┌──────────────────────────────────────────────────────────────┐
-   │              Coordinator (Discord Bot) :8030                 │
-   │    Nhan webhook → tao Discord thread + nut bam               │
-   │    Dispatch task den Worker qua HTTP                         │
+   │        ERP (.100 main / .102 currency) — Sell Order          │
+   │    Trader xu ly don tren ERP → ERP dispatch task giao hang   │
    └──────────┬─────────────────────────────────┬────────────────┘
-              │                                  │
+              │ POST /task                       │ POST /task
               ▼                                  ▼
    ┌──────────────────────┐          ┌──────────────────────┐
    │  Eldorado Worker     │          │     G2G Worker       │
@@ -42,10 +41,10 @@ Multi-process bot tu dong hoa quat don va giao hang tren **Eldorado.gg** va **G2
 **Luong hoat dong:**
 
 1. **Scanner** poll API moi 15-25s, loc whitelist/blacklist, extract chi tiet don hang
-2. **Discord Webhook** gui thong tin don hang len channel tuong ung (Diablo 4, PoE2, PoE1)
-3. **ERP Webhook** dong bo don hang vao ERP (Frappe/ERPNext)
-4. **Coordinator** nhan webhook, tao Discord thread kem nut bam "Giao nhanh" / "Gui bang chung"
-5. **Worker** nhan task qua HTTP, tu dong giao hang (mark delivered, upload proof, chat)
+2. **ERP Webhook** dong bo don hang vao ERP (Frappe/ERPNext) — PoE/PoE2/Torchlight → .102, con lai → .100
+3. **ERP** dispatch task giao hang den **Worker** qua HTTP `POST /task`
+4. **Worker** tu dong giao hang (mark delivered, upload proof, chat)
+5. **Status Sync** day trang thai marketplace (completed/cancelled/dispute) ve ERP
 6. **Watchdog** monitor heartbeat, tu dong restart service khi crash
 
 ## Yeu cau he thong
@@ -63,7 +62,7 @@ cd BotPasteDon
 python -m venv venv
 source venv/bin/activate    # Linux
 pip install -r requirements.txt
-cp .env.example .env        # Config tokens, webhooks, ERP URL
+cp .env.example .env        # Config ERP URL + API keys
 ```
 
 ## Cach chay
@@ -75,7 +74,7 @@ python -m scanners.main --platform eldorado  # Eldo scanner
 python -m scanners.main --platform g2g       # G2G scanner
 python -m workers.eldorado_worker            # Eldo worker (port 8001)
 python -m workers.g2g_worker                 # G2G worker (port 8002)
-python -m coordinator.main                   # Discord bot (port 8030)
+python -m status_sync                        # Status sync
 python scripts/watchdog.py                   # Watchdog
 python -m dashboard.server                   # Dashboard (port 8766)
 
@@ -83,20 +82,20 @@ python -m dashboard.server                   # Dashboard (port 8766)
 bash scripts/start.sh
 ```
 
-**Thu tu khoi dong:** Auth → Workers → Coordinator → Scanners → Watchdog → Dashboard
+**Thu tu khoi dong:** Auth → Workers → Scanners → Status Sync → Watchdog → Dashboard
 
 ## Cau truc thu muc
 
 ```
 BotPasteDon/
 ├── auth/                   # Auth service - G2G JWT + Eldo cookies
-├── coordinator/            # Discord bot + HTTP callback server
 ├── dashboard/              # Web UI - status, logs, OTP relay
 ├── deploy/                 # systemd units + start/stop scripts
 ├── docs/                   # Architecture + operations docs
 ├── scanners/               # Order scanners (API + Selenium fallback)
 ├── scripts/                # start.sh, stop.sh, watchdog.py
 ├── shared/                 # Config, DB, API clients, utilities
+├── status_sync/            # Marketplace state → ERP status_update
 ├── tests/                  # Test + debug scripts
 ├── workers/                # Delivery workers (Eldo + G2G)
 ├── .env.example            # Environment template
@@ -113,10 +112,9 @@ BotPasteDon/
 
 | Package | Muc dich |
 |---------|----------|
-| discord.py | Discord bot framework |
 | selenium | Browser automation (fallback mode) |
 | curl_cffi | HTTP client voi browser impersonation |
-| aiohttp | Async HTTP (webhooks, worker API) |
+| aiohttp | Async HTTP (ERP webhook, worker API) |
 | websockets | TalkJS WebSocket (Eldo chat) |
 | python-dotenv | Load .env |
 | camoufox | Anti-detect Firefox (Eldo auth) |
