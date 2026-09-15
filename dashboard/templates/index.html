@@ -452,7 +452,7 @@ function dashboard() {
     evtSource: null,
 
     // ── Computed ──
-    get logNames() { return Object.keys(this.logBuffers).length ? Object.keys(this.logBuffers) : ['auth', 'g2g_worker', 'eldo_worker', 'coordinator', 'g2g_scanner', 'eldo_scanner', 'watchdog', 'dashboard', 'status_sync'] },
+    get logNames() { return Object.keys(this.logBuffers).length ? Object.keys(this.logBuffers) : ['auth', 'g2g_worker', 'eldo_worker', 'g2g_scanner', 'eldo_scanner', 'watchdog', 'dashboard', 'status_sync'] },
     get filteredLogLines() {
       const lines = this.logBuffers[this.activeLog] || [];
       if (this.logFilter === 'all') return lines;

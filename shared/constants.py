@@ -17,7 +17,7 @@ PLATFORM_G2G = "g2g"
 # Order states
 ORDER_DETECTED = "DETECTED"
 ORDER_NOTIFIED = "NOTIFIED"
-ORDER_THREAD_CREATED = "THREAD_CREATED"
+ORDER_THREAD_CREATED = "THREAD_CREATED"  # legacy (Discord thread era) — no longer set
 ORDER_DELIVERING = "DELIVERING"
 ORDER_DELIVERED = "DELIVERED"  # delivered on marketplace, proof pending (fast delivery)
 ORDER_COMPLETED = "COMPLETED"

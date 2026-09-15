@@ -19,7 +19,7 @@ from shared.config import (
 )
 from shared.database import Database
 from shared.driver_manager import get_driver
-from shared.discord_utils import format_order_message, match_webhook, send_discord_webhook, send_erp_webhook
+from shared.erp_client import send_erp_webhook
 from shared.logging_config import setup_logger
 from shared.constants import URL_DEFAULTS, ORDER_NOTIFIED, ORDER_FAILED, ORDER_EXTRACT_FAILED
 
@@ -34,7 +34,7 @@ logger = setup_logger("scanner.main")
 # Global state for graceful shutdown
 _shutdown_event = asyncio.Event()
 
-# Set in run_scanner() so send_order_webhook can mark/claim ERP sync state.
+# Set in run_scanner() so push_order_to_erp can mark/claim ERP sync state.
 _scanner_db = None
 
 
@@ -43,38 +43,29 @@ def handle_signal(sig, frame):
     _shutdown_event.set()
 
 
-async def send_order_webhook(order_data: dict, platform: str) -> bool:
-    webhook_config = SCANNER_CONFIG.get("webhooks", {})
-    game_name = (order_data.get("game") or "").lower().strip()
-    item_name = (order_data.get("itemName") or "").lower()
+async def push_order_to_erp(order_data: dict, platform: str) -> bool:
+    """Push a newly scanned order to its ERP (currency games → .102, else .100).
 
-    target_url, matched_game = match_webhook(game_name, item_name, webhook_config)
-
-    if not target_url:
-        logger.error(f"No webhook found for game: {game_name}")
-        return False
-
-    logger.info(f"Sending webhook to: {matched_game}")
-    fields_config = SCANNER_CONFIG.get("fields", {})
-    message = format_order_message(order_data, fields_config.get("showLabels", False))
-    discord_ok = await send_discord_webhook(target_url, message, order_data)
-
-    # Send to ERP — route by game (currency games → .102), await + track sync.
+    Claims the order in-flight first so erp_retry_loop can't post it at the same
+    time; a failed push is released (erp_synced=0) for erp_retry_loop to retry.
+    """
     erp_target = erp_target_for_game(order_data.get("game", ""))
     webhook_url = erp_target["webhook_url"]
     erp_key = erp_key_for_target(erp_target, platform)
-    if webhook_url and erp_key:
-        order_id = order_data.get("orderId", "")
-        # Claim the order in-flight so erp_retry_loop can't post it concurrently.
-        claimed = bool(_scanner_db and order_id and _scanner_db.claim_erp_order(order_id))
-        erp_ok = await send_erp_webhook(order_data, webhook_url, erp_key)
-        if _scanner_db and order_id:
-            if erp_ok:
-                _scanner_db.mark_erp_synced(order_id)
-            elif claimed:
-                _scanner_db.release_erp_order(order_id)
-
-    return discord_ok
+    if not (webhook_url and erp_key):
+        logger.error("ERP webhook/key not configured for game=%r", order_data.get("game"))
+        return False
+    order_id = order_data.get("orderId", "")
+    logger.info("Pushing order to ERP [%s]: %s", erp_target["id"], order_id)
+    if _scanner_db and order_id and not _scanner_db.claim_erp_order(order_id):
+        return False  # erp_retry_loop already has it in flight
+    erp_ok = await send_erp_webhook(order_data, webhook_url, erp_key)
+    if _scanner_db and order_id:
+        if erp_ok:
+            _scanner_db.mark_erp_synced(order_id)
+        else:
+            _scanner_db.release_erp_order(order_id)
+    return erp_ok
 
 
 # ── Manual paste (ERP-triggered, on-demand) ─────────────────────────────────
@@ -273,7 +264,7 @@ async def run_scanner(platform: str):
         scanner = G2GAPIScanner(auth_manager, SCANNER_CONFIG, db)
 
         async def on_order(order_data: dict):
-            return await send_order_webhook(order_data, platform)
+            return await push_order_to_erp(order_data, platform)
 
         # API scanner has its own scan loop
         async def api_scan_loop():
@@ -290,9 +281,10 @@ async def run_scanner(platform: str):
                         if not db.insert_order(platform, order["id"], order_data):
                             continue
 
-                        success = await on_order(order_data)
-                        if success:
-                            db.update_order_status(order["id"], ORDER_NOTIFIED)
+                        # NOTIFIED before the push: erp_retry_loop skips DETECTED,
+                        # so a failed push (or a crash mid-push) stays retryable.
+                        db.update_order_status(order["id"], ORDER_NOTIFIED)
+                        await on_order(order_data)
                 except Exception as e:
                     logger.error("API scan error: %s", e)
 
@@ -393,7 +385,7 @@ async def run_scanner(platform: str):
         scanner = EldoradoAPIScanner(auth_manager, SCANNER_CONFIG, db)
 
         async def on_order(order_data: dict):
-            return await send_order_webhook(order_data, platform)
+            return await push_order_to_erp(order_data, platform)
 
         async def api_scan_loop():
             while not _shutdown_event.is_set():
@@ -406,9 +398,8 @@ async def run_scanner(platform: str):
                             continue
                         if not db.insert_order(platform, order["id"], order_data):
                             continue
-                        success = await on_order(order_data)
-                        if success:
-                            db.update_order_status(order["id"], ORDER_NOTIFIED)
+                        db.update_order_status(order["id"], ORDER_NOTIFIED)
+                        await on_order(order_data)
                 except Exception as e:
                     logger.error("API scan error: %s", e)
 
@@ -459,7 +450,7 @@ async def run_scanner(platform: str):
         # Insert into DB (dedup)
         if not db.insert_order(platform, order_id, order_data):
             return False
-        success = await send_order_webhook(order_data, platform)
+        success = await push_order_to_erp(order_data, platform)
         if success:
             db.update_order_status(order_id, ORDER_NOTIFIED)
         return success

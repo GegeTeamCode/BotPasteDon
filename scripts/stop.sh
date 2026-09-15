@@ -12,14 +12,13 @@ echo "[$(date +%H:%M:%S)] Stopping BotPasteDon services..."
 systemctl stop bot-watchdog.service 2>/dev/null || true
 
 # Reverse-dependency order: stop watchdog first so it doesn't respawn things
-# we are about to kill, then dashboard / scanners / coordinator / workers,
+# we are about to kill, then dashboard / scanners / workers,
 # then auth last (its profile cleanup runs on SIGTERM).
 ORDER=(
     "watchdog.py"
     "dashboard.server"
     "status_sync"
     "scanners.main"
-    "coordinator.main"
     "workers.g2g_worker"
     "workers.eldorado_worker"
     "auth.main"
@@ -64,7 +63,7 @@ for prof in chrome_profile_g2g chrome_profile_eldo \
 done
 
 # Free ports in case fds linger.
-for PORT in 8010 8001 8002 8030 8766; do
+for PORT in 8010 8001 8002 8766; do
     fuser -k ${PORT}/tcp 2>/dev/null || true
 done
 

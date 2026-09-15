@@ -20,7 +20,7 @@ Usage:
     python scripts/deploy_git.py all                  # sync + restart everything
 
 Services: auth, scanner_g2g, scanner_eldo, worker_g2g, worker_eldo,
-          coordinator, dashboard
+          dashboard, status_sync
 """
 import sys
 import time
@@ -53,10 +53,6 @@ SERVICES = {
         "workers.eldorado_worker",
         "nohup venv/bin/python -u -m workers.eldorado_worker > /tmp/eldo_worker.log 2>&1 &",
     ),
-    "coordinator": (
-        "coordinator.main",
-        "nohup venv/bin/python -u -m coordinator.main > /tmp/coordinator.log 2>&1 &",
-    ),
     "dashboard": (
         "dashboard.server",
         "nohup venv/bin/python -u -m dashboard.server > /tmp/dashboard.log 2>&1 &",
@@ -68,8 +64,8 @@ SERVICES = {
         "nohup venv/bin/python -u -m status_sync > /tmp/status_sync.log 2>&1 &",
     ),
 }
-# Restart order for "all" (dependency-aware: auth -> workers -> coordinator -> scanners -> dashboard)
-ALL_ORDER = ["auth", "worker_g2g", "worker_eldo", "coordinator",
+# Restart order for "all" (dependency-aware: auth -> workers -> scanners -> dashboard)
+ALL_ORDER = ["auth", "worker_g2g", "worker_eldo",
              "scanner_g2g", "scanner_eldo", "dashboard", "status_sync"]
 
 
@@ -144,7 +140,7 @@ def main():
 
     # 4. Report
     print("\n=== running services ===")
-    print(run("pgrep -af 'auth.main|scanners.main|workers.|coordinator.main|"
+    print(run("pgrep -af 'auth.main|scanners.main|workers.|"
               "dashboard.server|watchdog.py' | grep -v 'bash -c' | grep -v grep"))
     ssh.close()
     print("\nDone.")

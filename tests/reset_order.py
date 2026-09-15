@@ -10,9 +10,9 @@ order_id = sys.argv[1] if len(sys.argv) > 1 else ''
 if order_id:
     conn.execute("UPDATE orders SET status='NOTIFIED', retry_data=NULL WHERE order_id LIKE ?", (order_id + '%',))
     conn.commit()
-    cur = conn.execute("SELECT order_id, status, discord_thread_id FROM orders WHERE order_id LIKE ?", (order_id + '%',))
+    cur = conn.execute("SELECT order_id, status, erp_synced FROM orders WHERE order_id LIKE ?", (order_id + '%',))
     for r in cur:
-        print(f'{r[0]} | {r[1]} | thread={r[2]}')
+        print(f'{r[0]} | {r[1]} | erp_synced={r[2]}')
 conn.close()
 print('Done')
 """

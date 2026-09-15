@@ -1,6 +1,6 @@
 """G2G Worker — HTTP API server that executes G2G deliveries.
 
-Receives tasks from Coordinator via POST /task.
+Receives tasks from ERP via POST /task.
 Supports two modes:
   - API mode (G2G_USE_API=true): Uses REST API, no browser needed
   - Selenium mode (default): Uses Chrome automation
@@ -80,27 +80,6 @@ async def handle_task(request: web.Request):
 
 async def handle_health(request: web.Request):
     return web.json_response({"status": "ok", "service": "g2g_worker"})
-
-
-# ── Task Processing ──
-
-COORDINATOR_URL = os.getenv("COORDINATOR_URL", "http://localhost:8030")
-
-
-async def _notify_coordinator(order_id: str, thread_id: str, success: bool):
-    """Tell coordinator to lock thread (or log failure)."""
-    if not thread_id:
-        return
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            await session.post(
-                f"{COORDINATOR_URL}/complete",
-                json={"order_id": order_id, "thread_id": thread_id, "success": success},
-                timeout=aiohttp.ClientTimeout(total=10),
-            )
-    except Exception as e:
-        logger.warning(f"Coordinator notify failed: {e}")
 
 
 # ── Retry/backoff policy ──────────────────────────────────────────────────────
@@ -185,7 +164,6 @@ def _build_retry_payload(task_data: dict, category: str, retry_count: int,
 
 async def process_task(task_data: dict):
     order_id = task_data["order_id"]
-    thread_id = task_data.get("thread_id", "")
     PROCESSING_TASKS.add(order_id)
 
     try:
@@ -205,7 +183,6 @@ async def process_task(task_data: dict):
         db.update_order_status(order_id, ORDER_COMPLETED)
         cleanup_files(task_data.get("files", []))
         logger.info(f"Completed: {order_id}")
-        await _notify_coordinator(order_id, thread_id, success=True)
 
     except Exception as e:
         err_msg = str(e)[:500]
@@ -226,7 +203,6 @@ async def process_task(task_data: dict):
                 retry_count=retry_count,
             )
             cleanup_files(task_data.get("files", []))
-            await _notify_coordinator(order_id, thread_id, success=False)
         elif retry_count > MAX_RETRY_ATTEMPTS:
             logger.error(
                 f"Retry cap hit for {order_id} after {retry_count} attempts "
@@ -237,7 +213,6 @@ async def process_task(task_data: dict):
                 error_message=f"RETRY_CAP:{category.upper()}:{err_msg}",
                 retry_count=retry_count,
             )
-            await _notify_coordinator(order_id, thread_id, success=False)
         else:
             payload = _build_retry_payload(task_data, category, retry_count, err_msg)
             db.mark_retry_attempt(
@@ -254,7 +229,6 @@ async def process_task(task_data: dict):
             )
             # Note: do NOT cleanup_files — recovery loop needs them for retry.
             # Files get cleaned on COMPLETED, TERMINAL, or RETRY_CAP paths above.
-            # Coordinator is not notified — order is in-flight retry, thread stays open.
     finally:
         # Delete the /tmp/erp_evidence_* copies downloaded this attempt (always
         # re-downloadable from the ERP dict on retry). Prevents the 7.3GB leak.
@@ -361,8 +335,8 @@ async def handle_g2g_api(order_id: str, task_data: dict):
 
     # Download ERP dict files to local paths.
     # Track the downloaded /tmp copies so process_task can delete them after the
-    # attempt (re-downloaded on retry). Discord PROOF_DIR paths (str) pass through
-    # and keep their own cleanup-on-terminal in process_task.
+    # attempt (re-downloaded on retry). Plain local paths (str) pass through and
+    # keep their own cleanup-on-terminal in process_task.
     erp_api_key = task_data.get("erp_api_key", "")
     files = []
     downloaded_tmp = []
@@ -663,8 +637,6 @@ async def run_worker():
 
                 if not task_data.get("order_id"):
                     task_data["order_id"] = order_id
-                if "thread_id" not in task_data:
-                    task_data["thread_id"] = order.get("discord_thread_id", "") or ""
 
                 logger.info(
                     f"Retrying {order_id} (category={category}, "

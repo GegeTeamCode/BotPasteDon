@@ -34,7 +34,7 @@ cleanup() {
 
     # Graceful first — let Chrome flush cookies before SIGKILL.
     for pat in "auth.main" "workers.g2g_worker" "workers.eldorado_worker" \
-               "coordinator.main" "scanners.main" "status_sync" \
+               "scanners.main" "status_sync" \
                "watchdog.py" "dashboard.server"; do
         pgrep -f "$pat" 2>/dev/null \
             | xargs -r kill -TERM 2>/dev/null || true
@@ -43,7 +43,7 @@ cleanup() {
 
     # Force kill anything still hanging (uses bash-filter helper).
     for pat in "auth.main" "workers.g2g_worker" "workers.eldorado_worker" \
-               "coordinator.main" "scanners.main" "status_sync" \
+               "scanners.main" "status_sync" \
                "watchdog.py" "dashboard.server" \
                "chromedriver" "camoufox-bin" "playwright"; do
         kill_pattern "$pat"
@@ -51,7 +51,7 @@ cleanup() {
     sleep 2
 
     # Free ports in case any straggler holds them.
-    for PORT in 8010 8001 8002 8030 8766; do
+    for PORT in 8010 8001 8002 8766; do
         fuser -k ${PORT}/tcp 2>/dev/null || true
     done
     sleep 1
@@ -73,13 +73,13 @@ start_services() {
     log "Starting BotPasteDon services..."
 
     # 1. Auth (must start first — provides JWT + cookies)
-    log "[1/9] Starting auth service..."
+    log "[1/8] Starting auth service..."
     nohup $VENV -u -m auth.main > $LOG_DIR/auth.log 2>&1 &
     AUTH_PID=$!
     sleep 10
     for i in 1 2 3; do
         if curl -sf http://localhost:8010/health > /dev/null 2>&1; then
-            log "[1/9] Auth OK (PID: $AUTH_PID)"
+            log "[1/8] Auth OK (PID: $AUTH_PID)"
             break
         fi
         warn "Auth not ready, waiting... (attempt $i)"
@@ -87,55 +87,50 @@ start_services() {
     done
 
     # 2-3. Workers (need auth)
-    log "[2/9] Starting G2G worker..."
+    log "[2/8] Starting G2G worker..."
     nohup $VENV -u -m workers.g2g_worker > $LOG_DIR/g2g_worker.log 2>&1 &
-    log "[2/9] G2G worker started (PID: $!)"
+    log "[2/8] G2G worker started (PID: $!)"
 
-    log "[3/9] Starting Eldorado worker..."
+    log "[3/8] Starting Eldorado worker..."
     nohup $VENV -u -m workers.eldorado_worker > $LOG_DIR/eldo_worker.log 2>&1 &
-    log "[3/9] Eldorado worker started (PID: $!)"
+    log "[3/8] Eldorado worker started (PID: $!)"
 
-    # 4. Coordinator (dispatches to workers)
-    log "[4/9] Starting coordinator..."
-    nohup $VENV -u -m coordinator.main > $LOG_DIR/coordinator.log 2>&1 &
-    log "[4/9] Coordinator started (PID: $!)"
-
-    # 5-6. Scanners (feed coordinator via Discord webhook)
-    log "[5/9] Starting G2G scanner..."
+    # 4-5. Scanners (push new orders to ERP)
+    log "[4/8] Starting G2G scanner..."
     nohup $VENV -u -m scanners.main --platform g2g > $LOG_DIR/g2g_scanner.log 2>&1 &
-    log "[5/9] G2G scanner started (PID: $!)"
+    log "[4/8] G2G scanner started (PID: $!)"
 
-    log "[6/9] Starting Eldorado scanner..."
+    log "[5/8] Starting Eldorado scanner..."
     nohup $VENV -u -m scanners.main --platform eldorado > $LOG_DIR/eldo_scanner.log 2>&1 &
-    log "[6/9] Eldorado scanner started (PID: $!)"
+    log "[5/8] Eldorado scanner started (PID: $!)"
 
-    # 7. Status sync (marketplace state → ERP webhook every 30m)
-    log "[7/9] Starting status_sync..."
+    # 6. Status sync (marketplace state → ERP webhook every 30m)
+    log "[6/8] Starting status_sync..."
     nohup $VENV -u -m status_sync > $LOG_DIR/status_sync.log 2>&1 &
-    log "[7/9] Status sync started (PID: $!)"
+    log "[6/8] Status sync started (PID: $!)"
 
-    # 8. Watchdog (must start AFTER everything else — otherwise it might
+    # 7. Watchdog (must start AFTER everything else — otherwise it might
     #    interpret missing heartbeats as crashes and respawn duplicates).
     #    Owned by systemd (bot-watchdog.service, Restart=always) so the watchdog
     #    is itself supervised. `systemctl start` is idempotent — no duplicate if
     #    botpaste.service's Wants= already started it. --no-block avoids any
     #    deadlock when start.sh runs inside the botpaste.service boot transaction.
     #    Falls back to nohup only on a dev box without the unit installed.
-    log "[8/9] Starting watchdog..."
+    log "[7/8] Starting watchdog..."
     if systemctl start --no-block bot-watchdog.service 2>/dev/null; then
-        log "[8/9] Watchdog started via systemd (bot-watchdog.service)"
+        log "[7/8] Watchdog started via systemd (bot-watchdog.service)"
     else
         nohup $VENV scripts/watchdog.py > $LOG_DIR/watchdog.log 2>&1 &
-        log "[8/9] Watchdog started via nohup fallback (PID: $!)"
+        log "[7/8] Watchdog started via nohup fallback (PID: $!)"
     fi
 
-    # 9. Dashboard (web UI; no dependencies)
-    log "[9/9] Starting dashboard..."
+    # 8. Dashboard (web UI; no dependencies)
+    log "[8/8] Starting dashboard..."
     nohup $VENV -u -m dashboard.server > $LOG_DIR/dashboard.log 2>&1 &
-    log "[9/9] Dashboard started (PID: $!)"
+    log "[8/8] Dashboard started (PID: $!)"
 
     log "All services started"
-    log "Logs: /tmp/{auth,g2g_worker,eldo_worker,coordinator,g2g_scanner,eldo_scanner,status_sync,watchdog,dashboard}.log"
+    log "Logs: /tmp/{auth,g2g_worker,eldo_worker,g2g_scanner,eldo_scanner,status_sync,watchdog,dashboard}.log"
 }
 
 # ── Status check ──
@@ -143,7 +138,7 @@ show_status() {
     echo ""
     log "=== Service Status ==="
     for SVC in "auth.main" "workers.g2g_worker" "workers.eldorado_worker" \
-               "coordinator.main" "scanners.main" "status_sync" \
+               "scanners.main" "status_sync" \
                "watchdog.py" "dashboard.server"; do
         # Filter bash launchers from PID list so the column shows real python PIDs.
         PIDS=$(pgrep -af "$SVC" 2>/dev/null \
@@ -154,7 +149,7 @@ show_status() {
     done
     echo ""
     log "=== Ports ==="
-    ss -tlnp 2>/dev/null | grep -E "8010|8001|8002|8030|8766" || echo "  No ports bound"
+    ss -tlnp 2>/dev/null | grep -E "8010|8001|8002|8766" || echo "  No ports bound"
 }
 
 # ── Main ──

@@ -1,6 +1,6 @@
 """Eldorado Worker — HTTP API server that executes Eldorado deliveries.
 
-Receives tasks from Coordinator via POST /task.
+Receives tasks from ERP via POST /task.
 Supports two modes:
   - API mode (ELDO_USE_API=true): Uses REST API, no browser needed
   - Selenium mode (default): Uses Chrome automation
@@ -62,7 +62,7 @@ async def _run_sync(func, *args, timeout=120):
 # ── HTTP API ──
 
 async def handle_task(request: web.Request):
-    """POST /task — receive task from Coordinator."""
+    """POST /task — receive task from ERP."""
     try:
         task_data = await request.json()
     except Exception:
@@ -87,31 +87,10 @@ async def handle_health(request: web.Request):
 
 # ── Task Processing ──
 
-COORDINATOR_URL = os.getenv("COORDINATOR_URL", "http://localhost:8030")
-
-
-async def _notify_coordinator(order_id: str, thread_id: str, success: bool,
-                            action: str = "normal_delivery"):
-    if not thread_id:
-        return
-    try:
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            await session.post(
-                f"{COORDINATOR_URL}/complete",
-                json={"order_id": order_id, "thread_id": thread_id,
-                      "success": success, "action": action},
-                timeout=aiohttp.ClientTimeout(total=10),
-            )
-    except Exception as e:
-        logger.warning(f"Coordinator notify failed: {e}")
-
-
 async def process_task(task_data: dict):
     global talkjs_client
     order_id = task_data["order_id"].upper()
     action = task_data.get("action", "normal_delivery")
-    thread_id = task_data.get("thread_id", "")
     logger.info(f"Task received: {order_id} action={action} files={len(task_data.get('files', []))}")
 
     if action != "fast_delivery":
@@ -133,14 +112,11 @@ async def process_task(task_data: dict):
             # COMPLETED guard would otherwise block that follow-up step.
             db.update_order_status(order_id, ORDER_DELIVERED)
             logger.info(f"Delivered (fast, proof pending): {order_id}")
-            await _notify_coordinator(order_id, thread_id, success=True,
-                                      action="fast_delivery")
         elif ELDO_USE_API and api_client and auth_manager:
             await handle_eldo_api(order_id, task_data)
             db.update_order_status(order_id, ORDER_COMPLETED)
             cleanup_files(task_data.get("files", []))
             logger.info(f"Completed: {order_id}")
-            await _notify_coordinator(order_id, thread_id, success=True)
         else:
             # Selenium mode, normal delivery
             files = task_data.get("files", [])
@@ -157,7 +133,6 @@ async def process_task(task_data: dict):
             else:
                 db.update_order_status(order_id, ORDER_FAILED,
                                        error_message=f"Partial upload: {uploaded}/{len(files)}")
-            await _notify_coordinator(order_id, thread_id, success=True)
 
     except Exception as e:
         err_msg = str(e)[:200]
@@ -174,7 +149,6 @@ async def process_task(task_data: dict):
         else:
             logger.error(f"Task error for {order_id}: {e}")
             db.update_order_status(order_id, ORDER_FAILED, error_message=err_msg)
-            await _notify_coordinator(order_id, thread_id, success=False)
     finally:
         # Delete /tmp/erp_evidence_* copies downloaded this attempt (re-downloadable
         # on retry). Prevents the evidence-file disk leak.
@@ -188,7 +162,7 @@ async def _download_file(file_info) -> Optional[str]:
     """Download file from ERP to temp dir. Accepts dict {url, evidence_id, api_key} or path str."""
     import tempfile
     if isinstance(file_info, str):
-        return file_info  # Already a local path (from Discord coordinator)
+        return file_info  # Already a local path
 
     url = file_info.get("url", "")
     evidence_id = file_info.get("evidence_id", "")
@@ -294,7 +268,7 @@ async def handle_eldo_api(order_id: str, task_data: dict):
     erp_api_key = task_data.get("erp_api_key", "")
 
     # Track /tmp copies downloaded from ERP dicts so process_task can delete them
-    # after the attempt (re-downloaded on retry). Discord PROOF_DIR paths (str)
+    # after the attempt (re-downloaded on retry). Plain local paths (str)
     # are NOT tracked here — they keep cleanup-on-terminal in process_task.
     downloaded_tmp = []
     task_data["_downloaded_tmp"] = downloaded_tmp  # cleaned in process_task.finally
@@ -693,7 +667,6 @@ async def run_worker():
                         "order_url": order.get("order_url", ""),
                         "action": "normal_delivery",
                         "files": [],
-                        "thread_id": order.get("discord_thread_id", ""),
                     }
 
                 asyncio.create_task(process_task(task_data))

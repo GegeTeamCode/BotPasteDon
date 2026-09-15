@@ -49,13 +49,6 @@ SERVICE_REGISTRY = [
         "tier": 1,
     },
     {
-        "name": "coordinator",
-        "cmd": "venv/bin/python -u -m coordinator.main",
-        "log": "/tmp/coordinator.log",
-        "env": {},
-        "tier": 2,
-    },
-    {
         "name": "scanner_eldorado",
         "cmd": "venv/bin/python -u -m scanners.main --platform eldorado",
         "log": "/tmp/eldo_scanner.log",

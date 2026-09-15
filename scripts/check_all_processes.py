@@ -19,7 +19,6 @@ EXPECTED = [
     ("scanners.main.*g2g",                 "G2G Scanner",         None),
     ("workers.eldorado_worker",            "Eldo Worker",         8001),
     ("workers.g2g_worker",                 "G2G Worker",          8002),
-    ("coordinator.main",                   "Coordinator",         8030),
     ("status_sync",                        "Status Sync",         None),
     ("dashboard.server",                   "Dashboard",           8766),
     ("scripts/watchdog.py",                "Watchdog",            None),
@@ -72,7 +71,6 @@ HB_KEY = {
     "G2G Scanner":    "scanner_g2g",
     "Eldo Worker":    "worker_eldo",
     "G2G Worker":     "worker_g2g",
-    "Coordinator":    "coordinator",
     "Dashboard":      "dashboard",
 }
 

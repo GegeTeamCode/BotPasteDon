@@ -6,29 +6,6 @@ from pathlib import Path
 
 load_dotenv()
 
-# ── Discord Bot Tokens ──
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Legacy: single bot
-ELDO_WORKER_TOKEN = os.getenv("ELDO_WORKER_TOKEN") or BOT_TOKEN
-G2G_WORKER_TOKEN = os.getenv("G2G_WORKER_TOKEN") or BOT_TOKEN
-
-# ── Channel IDs ──
-CHANNEL_IDS = [int(x) for x in os.getenv("CHANNEL_IDS", "").split(",") if x]
-ELDO_WORKER_CHANNEL_ID = int(os.getenv("ELDO_WORKER_CHANNEL_ID") or "0") or None
-G2G_WORKER_CHANNEL_ID = int(os.getenv("G2G_WORKER_CHANNEL_ID") or "0") or None
-
-# ── Webhook URLs ──
-WEBHOOK_DEFAULT = os.getenv("WEBHOOK_DEFAULT", "")
-WEBHOOK_DIABLO4 = os.getenv("WEBHOOK_DIABLO4", "")
-WEBHOOK_POE2 = os.getenv("WEBHOOK_POE2", "")
-WEBHOOK_POE1 = os.getenv("WEBHOOK_POE1", "")
-ELDO_WEBHOOK_URL = os.getenv("ELDO_WEBHOOK_URL", "")
-G2G_WEBHOOK_URL = os.getenv("G2G_WEBHOOK_URL", "")
-
-# ── Ops alerts (profile cookie death, session kick) ──
-# Dedicated Discord webhook for operational alerts; falls back to the default
-# order-notification channel so alerts are never silently dropped.
-ALERT_WEBHOOK_URL = os.getenv("ALERT_WEBHOOK_URL", "") or WEBHOOK_DEFAULT
-
 # ── ERP Webhook ──
 ERP_WEBHOOK_URL = os.getenv("ERP_WEBHOOK_URL", "")
 ERP_API_KEY = os.getenv("ERP_API_KEY", "")
@@ -227,25 +204,4 @@ SCANNER_CONFIG = {
     },
     "scan_interval_min": int(os.getenv("SCAN_INTERVAL_MIN", "15")),
     "scan_interval_max": int(os.getenv("SCAN_INTERVAL_MAX", "25")),
-    "webhooks": {
-        "default": WEBHOOK_DEFAULT or ELDO_WEBHOOK_URL,
-        "mappings": [
-            {"game": "Diablo 4", "keywords": ["diablo 4", "diablo iv", "d4"], "url": WEBHOOK_DIABLO4},
-            {"game": "Path of Exile 2", "keywords": ["poe2", "path of exile 2", "poe 2", "fate of the vaal"], "url": WEBHOOK_POE2},
-            {"game": "Path of Exile", "keywords": ["path of exile", "poe1", "poe 1"], "url": WEBHOOK_POE1},
-        ],
-    },
-    "fields": {
-        "showLabels": False,
-        "platform": True,
-        "customerName": True,
-        "orderId": True,
-        "game": False,
-        "server": False,
-        "itemName": True,
-        "quantity": True,
-        "character": True,
-        "price": False,
-        "url": True,
-    },
 }

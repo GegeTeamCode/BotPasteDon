@@ -9,7 +9,9 @@ from shared.constants import (
 # Valid state transitions
 TRANSITIONS = {
     ORDER_DETECTED: [ORDER_NOTIFIED, ORDER_FAILED],
-    ORDER_NOTIFIED: [ORDER_THREAD_CREATED, ORDER_DETECTED],  # re-detect if thread not created
+    # NOTIFIED = captured + handed to the ERP push (erp_synced tracks the push).
+    ORDER_NOTIFIED: [ORDER_DELIVERING, ORDER_DELIVERED, ORDER_FAILED, ORDER_DETECTED],
+    # Legacy Discord-thread status: only on rows created before 2026-09-15.
     ORDER_THREAD_CREATED: [ORDER_DELIVERING, ORDER_DELIVERED, ORDER_FAILED],
     # DELIVERED = fast-delivered on marketplace, proof still pending → operator can
     # still send proof ("Đã giao") which completes it, or it fails.
