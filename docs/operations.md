@@ -415,11 +415,24 @@ ssh root@192.168.2.220 'rm -f /opt/BotPasteDon/chrome_profile_eldo/{parent.lock,
 # QUAN TRONG: mo Camoufox VISIBLE phai dung `nohup ... &` (nhu deploy_open_eldo.py),
 # KHONG dung `setsid ... </dev/null & disown` — detach kieu do lam vo pipe IPC cua
 # Playwright node driver -> browser crash ngay sau khi mo (EPIPE, node:events).
-ssh root@192.168.2.220 'cd /opt/BotPasteDon && DISPLAY=:99 nohup venv/bin/python -u /tmp/open_eldo_vnc_profile.py chrome_profile_eldo >/tmp/vnc_main.log 2>&1 &'
+ssh root@192.168.2.220 'cd /opt/BotPasteDon && DISPLAY=:99 nohup venv/bin/python -u scripts/open_eldo_vnc_profile.py chrome_profile_eldo >/tmp/vnc_main.log 2>&1 &'
+# Lan dau mo co the crash ngay voi "TypeError: Cannot read properties of undefined (reading 'url')"
+# (bug Playwright, xem muc rieng) → mo lai. Kiem tra: `tail /tmp/vnc_main.log` phai co "keep alive".
 
 # 3. Connect VNC 192.168.2.220:5900 (pwd 123456) bang Remmina/TigerVNC (x11vnc mo LAN), login Google → Eldorado
-# 4. SIGTERM viewer de Camoufox SDK flush cookies cleanly
-ssh root@192.168.2.220 'pgrep -f open_eldo_vnc | xargs -r kill -TERM'
+#    Login toi khi THAY ten tai khoan. Dung dong cua so Camoufox trong VNC — chi dong Remmina.
+
+# 4a. TRUOC KHI DONG: xem cookie that dang nam o file nao (bay 2026-09-15, xem ghi chu duoi)
+ssh root@192.168.2.220 'for p in $(pgrep -f "[c]amoufox-bin -no-remote -wait"); do ls -l /proc/$p/fd | grep cookies; done'
+#     Neu Camoufox dang mo `cookies.sqlite.bak` (khong phai `cookies.sqlite`) → sao luu NGAY bang cp:
+ssh root@192.168.2.220 'cd /opt/BotPasteDon && cp chrome_profile_eldo/cookies.sqlite.bak eldo_cookies_login_$(date +%y%m%d).sqlite'
+
+# 4b. Dong viewer bang SIGINT (= Ctrl+C). Script KHONG bat SIGTERM: kill -TERM giet python ngay,
+#     khoi `with Camoufox` khong kip dong em. SIGINT → KeyboardInterrupt → browser dong ~2s.
+ssh root@192.168.2.220 'pgrep -f "[o]pen_eldo_vnc_profile" | xargs -r kill -INT'
+
+# 4c. Neu `cookies.sqlite` van khong co RefreshToken nhung ban sao luu co → cai ban sao luu vao:
+ssh root@192.168.2.220 'cd /opt/BotPasteDon/chrome_profile_eldo && for s in "" -wal -shm; do [ -e cookies.sqlite$s ] && mv cookies.sqlite$s cookies.sqlite$s.pre-login-$(date +%y%m%d); done; cp ../eldo_cookies_login_$(date +%y%m%d).sqlite cookies.sqlite'
 
 # 5. Lap lai cho bak1, bak2 (deploy script open_eldo_vnc_profile.py accepts <profile_name>)
 # 6. Restart auth + watchdog — hoac gon hon: `systemctl restart botpaste.service` (dung lai ca watchdog)
@@ -433,16 +446,24 @@ ssh root@192.168.2.220 'cd /opt/BotPasteDon && setsid venv/bin/python scripts/wa
 > cookie". Truoc khi restart auth, xem badge RT tren dashboard (hoac `/health`
 > `eldo.refresh_token_expires_in`): null → chuan bi re-login VNC truoc.
 
-**Verify cookies sau re-login**:
-```python
-import sqlite3, datetime
-c = sqlite3.connect('/opt/BotPasteDon/chrome_profile_eldo/cookies.sqlite')
-for name, exp in c.execute("SELECT name, expiry FROM moz_cookies WHERE name LIKE '__Host-Eldorado%'"):
-    print(name, datetime.datetime.utcfromtimestamp(exp))
-# Mong doi:
-#   __Host-EldoradoIdToken     2026-06-08 02:25 UTC  (~30-60 phut)
-#   __Host-EldoradoRefreshToken 2026-07-08 01:55 UTC  (~30 ngay)
+> **⚠️ Bay cookie khi re-login (2026-09-15):**
+> - **Camoufox co the ghi cookie vao `cookies.sqlite.bak`**, KHONG vao `cookies.sqlite`. Auth chi doc
+>   `cookies.sqlite` → login thanh cong van bi bao "khong co RefreshToken". Luon lam buoc 4a truoc khi dong.
+> - **Dung dung sqlite `backup()` API len file Camoufox dang mo**: Firefox giu lock doc quyen → lenh
+>   TREO vo han (file dich 0 byte). Sao luu bang `cp` thuong, roi `PRAGMA integrity_check` tren ban sao.
+> - **Dong viewer bang SIGINT, khong SIGTERM** (buoc 4b).
+> - Server KHONG co `sqlite3` CLI — doc DB bang `venv/bin/python`.
+
+**Verify cookies sau re-login** — dung helper cua auth (doc dung file auth se dung):
+```bash
+cd /opt/BotPasteDon && venv/bin/python -c "
+from auth.main import _eldo_rt_expires_in
+print({k: (round(v/86400, 1) if v else v) for k, v in _eldo_rt_expires_in().items()})"
+# Mong doi: {'chrome_profile_eldo': 30.0, 'chrome_profile_eldo_bak1': ..., ...}  (None = khong con RefreshToken)
 ```
+Neu tu doc bang `sqlite3.connect`, copy file kem `-wal` ra thu muc tam truoc (tranh lock + thay ban ghi moi nhat).
+Sau buoc 6, `/health` co `eldo.logged_in=true` + log `[ELDO] Backend refresh OK`, dashboard `:8766` hien
+badge **RT (re-login)** ~30d cho profile vua login.
 
 ### G2G Auth — backend refresh
 
@@ -787,14 +808,16 @@ python scripts/deploy_open_eldo.py
 # tren Xvfb :99 voi profile chrome_profile_eldo (main).
 ```
 
-Sau do connect VNC viewer (TightVNC/RealVNC/TigerVNC) tu may:
+Sau do connect VNC viewer (Remmina/TigerVNC/TightVNC/RealVNC) tu may:
 - Host: `192.168.2.220:5900`
 - Password: `123456`
 
-Khi xong, dong viewer:
+Khi xong, dong viewer bang **SIGINT** (script khong bat SIGTERM; `pkill -f` khong co `[x]` trong ssh
+con co the tu giet chinh phien ssh):
 ```bash
-ssh root@192.168.2.220 "pkill -f open_eldo_vnc.py ; pkill -f camoufox-bin"
+ssh root@192.168.2.220 'pgrep -f "[o]pen_eldo_vnc" | xargs -r kill -INT'
 ```
+Neu vua login trong viewer, lam buoc 4a (kiem `cookies.sqlite.bak`) TRUOC khi dong — xem muc re-login.
 
 **Quan trong**: Sau khi pkill camoufox-bin, profile co the de lai `parent.lock` → block lan auth capture ke tiep. Tu **2026-06-04** auth tu xoa lock khi startup/next-capture, khong can lo. Truoc do phai `rm -f chrome_profile_eldo/parent.lock chrome_profile_eldo/.parentlock chrome_profile_eldo/lock` thu cong.
 
