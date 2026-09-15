@@ -6,7 +6,7 @@
 |------|-------|
 | Server | LXC on Proxmox, `192.168.2.220` |
 | SSH | `root` / `123456` |
-| VNC | `192.168.2.220:5900` / `123456` |
+| VNC | `192.168.2.220:5900` / `123456` — mo LAN (khong `-localhost`), vao thang bang Remmina/TigerVNC |
 | App dir | `/opt/BotPasteDon` |
 | Python | `/opt/BotPasteDon/venv/bin/python` |
 | ERP | `192.168.2.100:80` (Frappe/ERPNext) |
@@ -153,7 +153,9 @@ conn.close()
     "active_profile": "chrome_profile_eldo_bak1",  // dang dung profile nao
     "cookies": 126,
     "xsrf": true,                            // co XSRF token chua
-    "logged_in": true                        // session da login chua
+    "logged_in": true,                       // session da login chua
+    "refresh_token_expires_in": 2548000,     // giay con lai cua RefreshToken tren DIA, lay profile con lau nhat (null = khong profile nao con)
+    "refresh_token_profile": "chrome_profile_eldo"
   }
 }
 ```
@@ -161,6 +163,7 @@ conn.close()
 **Co the gay nghi ngo**:
 - `fresh=false` keo dai > 15 phut → capture bi fail, xem `/tmp/auth*.log` (file moi nhat).
 - `logged_in=false` tren Eldo → profile mat session, can mo VNC re-login (xem muc "VNC inspection" duoi).
+- `eldo.refresh_token_expires_in` nho/null → sap phai re-login VNC. Dashboard `:8766` hien badge **RT (re-login)**: tab Overview = profile con lau nhat, tab Profiles = tung profile (do < 3 ngay, vang < 7 ngay). `/auth/profile-status` tra `rt_expires_in` cho tung profile Eldo.
 - `has_jwt=false` tren G2G → Chrome session khong tao duoc, thuong la profile lock hoac orphan chrome (xem muc "Chrome Profile Lock").
 
 ## Log Locations
@@ -402,8 +405,10 @@ Cookies critical:
 Quy trinh re-login (Camoufox visible qua VNC):
 
 ```bash
-# 1. Stop watchdog + auth (tranh xung dot profile)
-ssh root@192.168.2.220 'pgrep -f "watchdog.py" | xargs -r kill -9; pgrep -f "python.*auth.main" | xargs -r kill -9'
+# 1. Stop watchdog + auth (tranh xung dot profile). Watchdog chay duoi systemd (Restart=always)
+#    nen PHAI `systemctl stop`, kill -9 se bi hoi sinh. Auth PHAI kill -9: tat em thi auth
+#    `_kill_orphan_browsers` giet MOI camoufox, ke ca cua so VNC. G2G mu tam cho toi buoc 6.
+ssh root@192.168.2.220 'systemctl stop bot-watchdog.service; pgrep -f "[a]uth\.main" | xargs -r kill -9'
 
 # 2. Clear profile lock + launch Camoufox visible voi profile main
 ssh root@192.168.2.220 'rm -f /opt/BotPasteDon/chrome_profile_eldo/{parent.lock,.parentlock,lock}'
@@ -412,15 +417,21 @@ ssh root@192.168.2.220 'rm -f /opt/BotPasteDon/chrome_profile_eldo/{parent.lock,
 # Playwright node driver -> browser crash ngay sau khi mo (EPIPE, node:events).
 ssh root@192.168.2.220 'cd /opt/BotPasteDon && DISPLAY=:99 nohup venv/bin/python -u /tmp/open_eldo_vnc_profile.py chrome_profile_eldo >/tmp/vnc_main.log 2>&1 &'
 
-# 3. Connect VNC 192.168.2.220:5900 (pwd 123456), login Google → Eldorado
+# 3. Connect VNC 192.168.2.220:5900 (pwd 123456) bang Remmina/TigerVNC (x11vnc mo LAN), login Google → Eldorado
 # 4. SIGTERM viewer de Camoufox SDK flush cookies cleanly
 ssh root@192.168.2.220 'pgrep -f open_eldo_vnc | xargs -r kill -TERM'
 
 # 5. Lap lai cho bak1, bak2 (deploy script open_eldo_vnc_profile.py accepts <profile_name>)
-# 6. Restart auth + watchdog
+# 6. Restart auth + watchdog — hoac gon hon: `systemctl restart botpaste.service` (dung lai ca watchdog)
 ssh root@192.168.2.220 'cd /opt/BotPasteDon && HEADLESS_MODE=true setsid venv/bin/python -u -m auth.main </dev/null >/tmp/auth.log 2>&1 & disown'
 ssh root@192.168.2.220 'cd /opt/BotPasteDon && setsid venv/bin/python scripts/watchdog.py </dev/null >/tmp/watchdog.log 2>&1 & disown'
 ```
+
+> **⚠️ Restart co the LO session da chet (2026-09-15):** auth song duoc nho cookie refresh
+> trong RAM ke ca khi RefreshToken tren DIA cua ca 3 profile da mat. Restart auth (hay
+> `systemctl restart botpaste.service`) → cold-path khong con token → "CA 3 profile chet
+> cookie". Truoc khi restart auth, xem badge RT tren dashboard (hoac `/health`
+> `eldo.refresh_token_expires_in`): null → chuan bi re-login VNC truoc.
 
 **Verify cookies sau re-login**:
 ```python
@@ -503,7 +514,8 @@ headless thi da bi dong → `g2g_auth.driver = None` → moi auto-login sau do c
 toan. Da xay ra 2026-08-24 (mu ~20 phut) do don Xvfb sau khi re-login Eldorado xong.
 Dung Xvfb la ha tang thuong truc, khong phai thu tao/xoa theo phien:
 `nohup Xvfb :99 -screen 0 1440x900x24 -ac -nolisten tcp &` + `x11vnc -display :99
--rfbauth /root/.vnc/passwd -rfbport 5900 -localhost -forever -shared -bg`.
+-rfbauth /root/.vnc/passwd -rfbport 5900 -forever -shared -bg -o /tmp/x11vnc.log`
+(tu 2026-09-15 bo `-localhost` → Remmina/TigerVNC vao thang `192.168.2.220:5900`, khong can SSH tunnel).
 
 **⚠️ BAY: phai DONG cua so Chrome VNC sau khi login xong.** Vong poll cho manual login
 (`for _ in range(60)`) goi `init_driver()` mo Chrome headless tren **CUNG
@@ -815,20 +827,6 @@ SCANNER_CONFIG = {
 Co the override bang env vars: `SCANNER_WHITELIST`, `SCANNER_BLACKLIST` trong `.env`.
 
 **Khi them item moi**: Them vao whitelist, restart scanner.
-
-## Sua Webhook Routing
-
-Trong `shared/config.py`, thu tu mappings quyet dinh priority:
-
-```python
-"mappings": [
-    {"game": "Diablo 4", "keywords": ["diablo 4", "diablo iv", "d4"], "url": WEBHOOK_DIABLO4},
-    {"game": "Path of Exile 2", "keywords": ["poe2", "path of exile 2", "poe 2", "fate of the vaal"], "url": WEBHOOK_POE2},
-    {"game": "Path of Exile", "keywords": ["path of exile", "poe1", "poe 1"], "url": WEBHOOK_POE1},
-]
-```
-
-**First match wins** — Diablo 4 phai dung truoc PoE1/PoE2 de tranh match nham.
 
 ## G2G Title Mapping
 
