@@ -1014,6 +1014,17 @@ def _eldo_disk_refresh_expiry(profile_dir: str):
     return row[0] if row else None
 
 
+def _eldo_rt_expires_in() -> dict:
+    """{profile: seconds left on the on-disk RefreshToken (negative = expired),
+    or None when the profile has no RefreshToken} for every Eldorado profile."""
+    now = time.time()
+    out = {}
+    for profile in ELDO_PROFILES:
+        exp = _eldo_disk_refresh_expiry(profile)
+        out[profile] = int(exp - now) if exp else None
+    return out
+
+
 class EldoAuth(PlatformAuth):
     """Eldorado auth using Camoufox (bypass Cloudflare Turnstile)."""
 
@@ -1519,6 +1530,11 @@ async def handle_health(request: web.Request):
         if exp:
             g2g_jwt_exp = max(0, exp - time.time())
 
+    # Eldorado re-login deadline = the profile whose on-disk RefreshToken lasts
+    # longest (failover rotates to it once the others die).
+    eldo_rt = {p: s for p, s in _eldo_rt_expires_in().items() if s is not None}
+    eldo_rt_profile = max(eldo_rt, key=eldo_rt.get) if eldo_rt else None
+
     return web.json_response({
         "status": "ok",
         "uptime": int(time.time() - started_at),
@@ -1546,6 +1562,8 @@ async def handle_health(request: web.Request):
             "cookies": len(eldo_auth.data.get("cookies", {})) if eldo_auth.data else 0,
             "xsrf": bool(eldo_auth.data and eldo_auth.data.get("xsrf_token")),
             "logged_in": bool(eldo_auth.data and eldo_auth.data.get("logged_in")),
+            "refresh_token_expires_in": eldo_rt[eldo_rt_profile] if eldo_rt_profile else None,
+            "refresh_token_profile": eldo_rt_profile,
         },
     })
 
@@ -1598,6 +1616,11 @@ async def handle_profile_status(request: web.Request):
     result[eldo_auth.profile_dir]["alive"] = eldo_alive
     result[eldo_auth.profile_dir]["detail"] = "logged in" if eldo_alive else "not logged in"
     result[eldo_auth.profile_dir]["checked_at"] = time.time()
+
+    # On-disk RefreshToken countdown per Eldorado profile, read live (the periodic
+    # check only fills profile_status every 5 min).
+    for profile, secs in _eldo_rt_expires_in().items():
+        result.setdefault(profile, {"platform": "eldo"})["rt_expires_in"] = secs
 
     return web.json_response({"profiles": result})
 

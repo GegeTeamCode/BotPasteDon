@@ -251,6 +251,7 @@ tr:hover td{background:rgba(31,111,235,.04)}
         </h3>
         <div class="stat-row"><span class="label">Cookies</span><span class="value" x-text="auth.eldo?.cookies ? `Yes (${auth.eldo.cookies})` : 'No'"></span></div>
         <div class="stat-row"><span class="label">Logged in</span><span class="value" x-text="auth.eldo?.logged_in ? 'Yes' : 'No'"></span></div>
+        <div class="stat-row" title="RefreshToken trên đĩa của profile còn lâu nhất — hết hạn phải re-login VNC"><span class="label">RT (re-login)</span><span class="badge" :class="eldoRtBadge(auth.eldo?.refresh_token_expires_in).cls" x-text="eldoRtBadge(auth.eldo?.refresh_token_expires_in).text + (auth.eldo?.refresh_token_profile ? ' · ' + auth.eldo.refresh_token_profile.replace('chrome_profile_','') : '')"></span></div>
         <div class="stat-row"><span class="label">Profile</span><span class="value" x-text="(auth.eldo?.active_profile || '--').replace('chrome_profile_','')"></span></div>
       </div>
     </div>
@@ -311,6 +312,7 @@ tr:hover td{background:rgba(31,111,235,.04)}
               <template x-if="p.isActive"><span class="badge badge-ok">active</span></template>
             </div>
             <div style="color:var(--text-dim)" x-text="p.status"></div>
+            <div class="stat-row" style="margin-top:6px" title="RefreshToken trên đĩa — hết hạn phải re-login VNC"><span class="label">RT (re-login)</span><span class="badge" :class="eldoRtBadge(p.rtSec).cls" x-text="eldoRtBadge(p.rtSec).text"></span></div>
           </div>
         </template>
       </div>
@@ -514,7 +516,7 @@ function dashboard() {
         const status = isActive
           ? (el.logged_in ? 'Logged in' : 'Not logged in')
           : (s.alive === true ? 'Session OK' : s.alive === false ? 'Session expired' : (s.detail || 'not checked yet'));
-        return { id, name: id.replace('chrome_profile_', ''), isActive, status };
+        return { id, name: id.replace('chrome_profile_', ''), isActive, status, rtSec: s.rt_expires_in };
       });
     },
 
@@ -844,6 +846,15 @@ function dashboard() {
       if (s == null) return '--';
       if (s <= 0) return 'Expired';
       return Math.floor(s/60) + 'm ' + (s%60) + 's';
+    },
+    // Eldorado RefreshToken lives ~30d; alert threshold in auth is 72h.
+    eldoRtBadge(s) {
+      if (s == null) return { text: 'Không có', cls: 'badge-err' };
+      if (s <= 0) return { text: 'HẾT HẠN', cls: 'badge-err' };
+      const text = this.fmtDurLong(s);
+      if (s < 3*86400) return { text, cls: 'badge-err' };
+      if (s < 7*86400) return { text, cls: 'badge-warn' };
+      return { text, cls: 'badge-ok' };
     },
     fmtDurLong(s) {
       if (s == null) return '--';
