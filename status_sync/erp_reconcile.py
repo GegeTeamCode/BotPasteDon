@@ -144,6 +144,11 @@ async def reconcile_from_erp(db, erp, api, auth, platform, *,
                                      order_item_id=_item_id(platform, ext))
 
         target = _TERMINAL_LOOKUP.get(status)
+        # ERP's state map is per platform: g2g takes "cancelled", eldorado only
+        # "canceled" (eldo_sync already sends that). Sending eldorado "cancelled"
+        # came back `ignored: unmapped eldorado/cancelled` and was re-pushed every cycle.
+        if target == "cancelled" and platform == "eldorado":
+            target = "canceled"
         if not target:
             skipped += 1  # still delivering/preparing — re-check after back-off
             await asyncio.sleep(throttle)

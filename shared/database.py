@@ -266,6 +266,9 @@ class Database:
 
         Used by status_sync to route each ERP status_update to the server that
         owns the order (currency games → .102, everything else → .100).
+        Case-insensitive: Eldorado GUIDs are stored UPPER in `orders` but arrive
+        lowercase from marketplace_status — an exact match missed them and routed
+        PoE orders to .100 (no_so).
         """
         if not order_id:
             return ""
@@ -273,7 +276,7 @@ class Database:
             conn = self._get_conn()
             try:
                 row = conn.execute(
-                    "SELECT game FROM orders WHERE order_id = ? LIMIT 1", (order_id,),
+                    "SELECT game FROM orders WHERE order_id = ? COLLATE NOCASE LIMIT 1", (order_id,),
                 ).fetchone()
                 return (row["game"] if row and row["game"] else "") or ""
             except Exception:

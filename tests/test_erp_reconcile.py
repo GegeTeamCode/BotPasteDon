@@ -133,7 +133,7 @@ def test_eldorado():
     assert (comp, canc, skip) == (1, 1, 1), (comp, canc, skip)
     assert api.lookups == ["AAA-1111", "BBB-2222", "CCC-3333"], "eldo must NOT append -1"
     assert ("AAA-1111", "completed") in erp.calls
-    assert ("BBB-2222", "cancelled") in erp.calls, "EL-3 refund-post-completion → cancelled"
+    assert ("BBB-2222", "canceled") in erp.calls, "EL-3 refund-post-completion → canceled (ERP eldorado map)"
     # db key phải lowercase (back-off khớp row sqlite lưu thường)
     assert ("eldorado", "aaa-1111") in db.rows, list(db.rows)
     assert ("AAA-1111", True) not in db.pushed and ("aaa-1111", True) in db.pushed
