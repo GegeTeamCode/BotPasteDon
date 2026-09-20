@@ -62,6 +62,10 @@ class Database:
                     CREATE INDEX IF NOT EXISTS idx_orders_status
                         ON orders(platform, status);
 
+                    -- Thong ke theo gio/ngay (dashboard /api/metrics) quet theo created_at
+                    CREATE INDEX IF NOT EXISTS idx_orders_created
+                        ON orders(created_at);
+
                     CREATE TABLE IF NOT EXISTS heartbeat (
                         service_name TEXT PRIMARY KEY,
                         last_beat DATETIME,

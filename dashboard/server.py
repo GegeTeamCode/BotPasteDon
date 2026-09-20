@@ -260,6 +260,96 @@ async def handle_orders(request: web.Request):
     })
 
 
+async def handle_metrics(request: web.Request):
+    """Thong ke don theo gio/ngay cho GeGe Console (chi doc, khong doi hanh vi bot).
+
+    ⚠️ Cot `created_at`/`updated_at` sinh bang SQLite `datetime('now')` = **luon UTC**,
+    bat ke may da chuyen sang gio VN. Vi vay moi phep gom "theo gio/theo ngay" o day deu
+    phai cong thang +7h TRONG truy van, neu khong bieu do lech dung 7 tieng.
+    """
+    hours = max(1, min(int(request.query.get("hours", "48")), 24 * 14))
+    days = max(1, min(int(request.query.get("days", "30")), 180))
+    VN = "+7 hours"
+
+    def rows_to_list(rows):
+        return [dict(r) for r in rows]
+
+    with db._get_conn() as conn:
+        by_hour = conn.execute(
+            """SELECT strftime('%Y-%m-%d %H:00', created_at, ?) AS bucket,
+                      platform, COUNT(*) AS n
+                 FROM orders
+                WHERE created_at >= datetime('now', ?)
+                GROUP BY bucket, platform ORDER BY bucket""",
+            (VN, f"-{hours} hours"),
+        ).fetchall()
+
+        by_day = conn.execute(
+            """SELECT strftime('%Y-%m-%d', created_at, ?) AS bucket,
+                      platform, COUNT(*) AS n
+                 FROM orders
+                WHERE created_at >= datetime('now', ?)
+                GROUP BY bucket, platform ORDER BY bucket""",
+            (VN, f"-{days} days"),
+        ).fetchall()
+
+        by_status = conn.execute(
+            """SELECT platform, status, COUNT(*) AS n
+                 FROM orders
+                WHERE created_at >= datetime('now', ?)
+                GROUP BY platform, status""",
+            (f"-{days} days",),
+        ).fetchall()
+
+        by_server = conn.execute(
+            """SELECT COALESCE(NULLIF(server, ''), '(khong ro)') AS server, COUNT(*) AS n
+                 FROM orders
+                WHERE created_at >= datetime('now', ?)
+                GROUP BY server""",
+            (f"-{days} days",),
+        ).fetchall()
+
+        # Don chua day duoc sang ERP qua 15 phut = dau hieu ket that su
+        unsynced = conn.execute(
+            """SELECT order_id, platform, status, game, item_name, created_at,
+                      COALESCE(erp_retry_count, 0) AS erp_retry_count, error_message
+                 FROM orders
+                WHERE COALESCE(erp_synced, 0) = 0
+                  AND created_at < datetime('now', '-15 minutes')
+                  AND created_at >= datetime('now', '-7 days')
+                ORDER BY created_at DESC LIMIT 50"""
+        ).fetchall()
+
+        errors = conn.execute(
+            """SELECT order_id, platform, status, error_message, retry_count, updated_at
+                 FROM orders
+                WHERE error_message IS NOT NULL AND error_message != ''
+                  AND updated_at >= datetime('now', '-2 days')
+                ORDER BY updated_at DESC LIMIT 50"""
+        ).fetchall()
+
+        totals = conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN created_at >= datetime('now','-1 day')  THEN 1 ELSE 0 END) AS d1,
+                      SUM(CASE WHEN created_at >= datetime('now','-1 hour') THEN 1 ELSE 0 END) AS h1,
+                      SUM(CASE WHEN COALESCE(erp_synced,0)=0
+                                AND created_at >= datetime('now','-1 day') THEN 1 ELSE 0 END) AS unsynced_1d
+                 FROM orders"""
+        ).fetchone()
+
+    return web.json_response({
+        "generated_at": int(time.time()),
+        "tz_note": "created_at trong DB la UTC; cac bucket duoi day da quy ve gio VN (+07)",
+        "totals": dict(totals),
+        "by_hour": rows_to_list(by_hour),
+        "by_day": rows_to_list(by_day),
+        "by_status": rows_to_list(by_status),
+        "by_server": rows_to_list(by_server),
+        "unsynced": rows_to_list(unsynced),
+        "errors": rows_to_list(errors),
+    })
+
+
 async def handle_log(request: web.Request):
     name = request.match_info.get("name", "auth")
     n = int(request.query.get("n", "100"))
@@ -461,6 +551,7 @@ async def run_dashboard():
     app.router.add_post("/api/auth/g2g/relogin/{profile}", handle_relogin_profile)
     app.router.add_get("/api/profile-status", handle_profile_status)
     app.router.add_get("/api/orders", handle_orders)
+    app.router.add_get("/api/metrics", handle_metrics)
     app.router.add_get("/api/log/{name}", handle_log)
     app.router.add_get("/api/logs", handle_logs_all)
     app.router.add_get("/api/events", handle_sse)
