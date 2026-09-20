@@ -309,12 +309,26 @@ async def handle_metrics(request: web.Request):
             (f"-{days} days",),
         ).fetchall()
 
-        # Don chua day duoc sang ERP qua 15 phut = dau hieu ket that su
+        # ⚠️ `erp_synced=0` mot minh KHONG co nghia la ket.
+        # Don o trang thai DETECTED la don bi loc o vong quet (dich vu boosting /
+        # "Custom Request"...) — CO Y khong day sang ERP: do 21/09 thay 330/330 don
+        # DETECTED deu erp_synced=0, trong khi NOTIFIED 175/175 da day thanh cong.
+        # Ket THAT SU = don da qua DETECTED (NOTIFIED/COMPLETED/...) ma van chua day.
+        unsynced_by_status = conn.execute(
+            """SELECT status, platform, COUNT(*) AS n
+                 FROM orders
+                WHERE COALESCE(erp_synced, 0) = 0
+                  AND created_at < datetime('now', '-15 minutes')
+                  AND created_at >= datetime('now', '-7 days')
+                GROUP BY status, platform"""
+        ).fetchall()
+
         unsynced = conn.execute(
             """SELECT order_id, platform, status, game, item_name, created_at,
                       COALESCE(erp_retry_count, 0) AS erp_retry_count, error_message
                  FROM orders
                 WHERE COALESCE(erp_synced, 0) = 0
+                  AND status != 'DETECTED'
                   AND created_at < datetime('now', '-15 minutes')
                   AND created_at >= datetime('now', '-7 days')
                 ORDER BY created_at DESC LIMIT 50"""
@@ -332,8 +346,10 @@ async def handle_metrics(request: web.Request):
             """SELECT COUNT(*) AS total,
                       SUM(CASE WHEN created_at >= datetime('now','-1 day')  THEN 1 ELSE 0 END) AS d1,
                       SUM(CASE WHEN created_at >= datetime('now','-1 hour') THEN 1 ELSE 0 END) AS h1,
-                      SUM(CASE WHEN COALESCE(erp_synced,0)=0
-                                AND created_at >= datetime('now','-1 day') THEN 1 ELSE 0 END) AS unsynced_1d
+                      SUM(CASE WHEN COALESCE(erp_synced,0)=0 AND status != 'DETECTED'
+                                AND created_at >= datetime('now','-1 day') THEN 1 ELSE 0 END) AS stuck_1d,
+                      SUM(CASE WHEN COALESCE(erp_synced,0)=0 AND status = 'DETECTED'
+                                AND created_at >= datetime('now','-1 day') THEN 1 ELSE 0 END) AS filtered_1d
                  FROM orders"""
         ).fetchone()
 
@@ -345,6 +361,7 @@ async def handle_metrics(request: web.Request):
         "by_day": rows_to_list(by_day),
         "by_status": rows_to_list(by_status),
         "by_server": rows_to_list(by_server),
+        "unsynced_by_status": rows_to_list(unsynced_by_status),
         "unsynced": rows_to_list(unsynced),
         "errors": rows_to_list(errors),
     })
