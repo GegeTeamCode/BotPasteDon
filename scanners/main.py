@@ -157,9 +157,16 @@ async def handle_manual_paste(scanner, platform: str, db, order_id: str) -> dict
         logger.error("manual paste %s ERP push error: %s", order_id, e)
     if erp_ok:
         db.mark_erp_synced(order_id)
-        logger.info("manual paste OK: %s/%s", platform, order_id)
+        logger.info("manual paste OK: %s/%s -> ERP %s", platform, order_id, erp_target["id"])
+        # Tra ve NOI da day don: routing theo GAME (PoE/PoE2/Torchlight -> .102,
+        # con lai -> .100) chu KHONG theo ERP nao goi. ERP goi se khong tim thay
+        # don trong DB cua no khi bam nham server -> can 2 truong nay de bao ro
+        # "don nam o ERP kia" thay vi mot cau chung chung.
         return {"status": "ok", "order_id": order_id,
-                "item_name": order_data.get("itemName", "")}
+                "item_name": order_data.get("itemName", ""),
+                "game": order_data.get("game", ""),
+                "erp_target": erp_target["id"],
+                "erp_webhook_url": webhook_url}
     if claimed:
         db.release_erp_order(order_id)
     return {"status": "error", "order_id": order_id,

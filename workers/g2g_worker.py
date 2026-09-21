@@ -82,6 +82,39 @@ async def handle_health(request: web.Request):
     return web.json_response({"status": "ok", "service": "g2g_worker"})
 
 
+async def handle_lookup_order(request: web.Request):
+    """GET /order/{order_item_id}?order_url=... — tra so luong THAT tren G2G.
+
+    ERP goi truoc khi tao don nhap tay de dien order_quantity cho dung: don tay
+    khong di qua webhook new_order nen khong co so luong nao dang tin cay. Chi
+    DOC, khong dong toi don. 404 = khong phai don cua minh / sai ID.
+    """
+    if not (G2G_USE_API and api_client and auth_manager):
+        return web.json_response(
+            {"ok": False, "reason": "api_mode_disabled"}, status=503)
+
+    order_id = request.match_info.get("order_item_id", "")
+    api_id = _resolve_api_id(order_id, request.query.get("order_url", ""))
+    if not api_id:
+        return web.json_response({"ok": False, "reason": "missing_order_id"}, status=400)
+
+    try:
+        auth = await auth_manager.get_auth()
+        info = await _read_order_qty(api_id, auth)
+    except Exception as e:
+        # Sai ID thi G2G tra code!=2000 -> APIError; auth/mang hong cung vao day.
+        # ERP khong duoc doan bua: tra ok=False de FE bat staff xac nhan.
+        logger.warning(f"[{order_id}] lookup failed: {e}")
+        reason = "auth_error" if _classify_error(e) == "auth" else "not_found"
+        return web.json_response(
+            {"ok": False, "reason": reason, "detail": str(e)[:200]},
+            status=502 if reason == "auth_error" else 404)
+
+    logger.info(f"[{order_id}] lookup OK: purchased={info['purchased_qty']} "
+                f"undelivered={info['undelivered_qty']} status={info['status']}")
+    return web.json_response({"ok": True, "order_id": order_id, **info})
+
+
 # ── Retry/backoff policy ──────────────────────────────────────────────────────
 
 MAX_RETRY_ATTEMPTS = 100
@@ -271,6 +304,40 @@ async def _download_g2g_file(file_info: dict, api_key: str = "") -> Optional[str
         return None
 
 
+ORDER_ITEM_RE = re.compile(r'order/item/([A-Za-z0-9\-]+)')
+
+
+def _resolve_api_id(order_id: str, order_url: str = "") -> str:
+    """G2G API can luon order_item_id DAY DU (co hau to -1); ERP chi luu phan
+    ngan trong external_order_id nhung order_url thi day du. Uu tien URL."""
+    if order_url:
+        m = ORDER_ITEM_RE.search(order_url)
+        if m:
+            return m.group(1)
+    return order_id
+
+
+async def _read_order_qty(api_id: str, auth):
+    """Doc so luong THAT cua don tren G2G. RAISE neu doc that bai (caller quyet
+    dinh xu ly), khong nuot loi thanh so 0 — giao 0 unit cung te nhu giao 1.
+
+    undelivered = purchased - delivered - in_prog = phan con phai giao.
+    """
+    detail = await api_client.call_with_retry(
+        api_client.get_order_detail, api_id, auth, auth.seller_id)
+    purchased = int(detail.get("purchased_qty") or 0)
+    delivered = int(detail.get("delivered_qty") or 0)
+    in_prog = int(detail.get("in_prog_qty") or 0)
+    return {
+        "api_id": api_id,
+        "status": str(detail.get("order_item_status") or ""),
+        "purchased_qty": purchased,
+        "delivered_qty": delivered,
+        "in_prog_qty": in_prog,
+        "undelivered_qty": max(purchased - delivered - in_prog, 0),
+    }
+
+
 async def _qty_already_delivered(api_id: str, qty: int, auth) -> bool:
     """Confirm via G2G marketplace truth that an 'already delivering' rejection on
     submit_delivered_qty is an idempotent re-dispatch (qty was set by a prior
@@ -298,23 +365,18 @@ async def _undelivered_qty(api_id: str, auth):
     PHẦN (trader đã giao tay một phần trước): ta submit đúng phần còn lại thay vì gửi
     trọn order_quantity."""
     try:
-        detail = await api_client.call_with_retry(
-            api_client.get_order_detail, api_id, auth, auth.seller_id)
+        info = await _read_order_qty(api_id, auth)
     except Exception as e:
         logger.warning(f"[{api_id}] cannot read undelivered_qty: {e}")
         return None
-    status = str(detail.get("order_item_status") or "").lower()
-    if status in ("cancelled", "canceled", "refunded", "cancellation_requested"):
+    if info["status"].lower() in ("cancelled", "canceled", "refunded",
+                                  "cancellation_requested"):
         return None
-    purchased = int(detail.get("purchased_qty") or 0)
-    delivered = int(detail.get("delivered_qty") or 0)
-    in_prog = int(detail.get("in_prog_qty") or 0)
-    return max(purchased - delivered - in_prog, 0)
+    return info["undelivered_qty"]
 
 
 async def handle_g2g_api(order_id: str, task_data: dict):
     """Delivery via REST API — runs steps individually to track progress."""
-    import re
     auth = await auth_manager.get_auth()
     qty = int(task_data.get("delivery_qty", "1"))
     raw_files = task_data.get("files", [])
@@ -324,14 +386,33 @@ async def handle_g2g_api(order_id: str, task_data: dict):
         message = message_path.read_text(encoding="utf-8").strip() or "Done"
 
     # Extract full order_item_id (with -1 suffix) from order_url
-    api_id = order_id
-    order_url = task_data.get("order_url", "")
-    if order_url:
-        m = re.search(r'order/item/([A-Za-z0-9\-]+)', order_url)
-        if m:
-            api_id = m.group(1)
+    api_id = _resolve_api_id(order_id, task_data.get("order_url", ""))
 
     skip_steps = set(task_data.get("skip_steps", []))
+
+    # ── Luoi an toan qty=1 ──────────────────────────────────────────────────
+    # delivery_qty=1 KHONG dang tin: ERP chi co so luong that voi don do bot
+    # paste (webhook new_order). Don nhap tay ma staff khong xac minh duoc
+    # external_order_id/order_url thi ERP cho order_quantity=1 co chu y, va
+    # G2G KHONG bao loi khi giao thieu -> don 5000 divine bi chot o 1 unit.
+    # Nen voi qty<=1 ta doc so luong that tren san truoc khi giao. Doc that bai
+    # -> giu nguyen qty cu (khong doan bua). Don that su 1 unit thi so nay tra
+    # ve dung 1, khong doi gi.
+    if qty <= 1 and "qty" not in skip_steps:
+        try:
+            info = await _read_order_qty(api_id, auth)
+        except Exception as e:
+            logger.warning(f"[{order_id}] khong doc duoc qty that, giu qty={qty}: {e}")
+        else:
+            real = info["undelivered_qty"]
+            if real > qty:
+                logger.warning(
+                    f"[{order_id}] ERP gui delivery_qty={qty} nhung G2G con "
+                    f"undelivered={real} (purchased={info['purchased_qty']}, "
+                    f"delivered={info['delivered_qty']}, in_prog={info['in_prog_qty']}) "
+                    f"-> giao FULL {real}")
+                qty = real
+                task_data["delivery_qty"] = str(real)
 
     # Download ERP dict files to local paths.
     # Track the downloaded /tmp copies so process_task can delete them after the
@@ -564,6 +645,7 @@ async def run_worker():
     app = web.Application()
     app.router.add_post("/task", handle_task)
     app.router.add_get("/health", handle_health)
+    app.router.add_get("/order/{order_item_id}", handle_lookup_order)
 
     runner = web.AppRunner(app)
     await runner.setup()
