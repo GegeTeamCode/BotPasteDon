@@ -37,6 +37,11 @@ logger = setup_logger("worker.eldo")
 WORKER_PORT = int(os.getenv("WORKER_ELDO_PORT", "8001"))
 
 PROCESSING_TASKS: set = set()
+
+# Trần số lượt tự gửi lại bằng chứng. Hết lượt thì đổi tiền tố lỗi để
+# recover_auth_failed() thôi nhặt — nếu không, một file hỏng vĩnh viễn sẽ
+# upload lại lên Firebase mỗi 60 giây không bao giờ dừng.
+PROOF_MAX_TRIES = 5
 talkjs_client: TalkJSClient = None
 driver = None
 db: Database = None
@@ -113,10 +118,37 @@ async def process_task(task_data: dict):
             db.update_order_status(order_id, ORDER_DELIVERED)
             logger.info(f"Delivered (fast, proof pending): {order_id}")
         elif ELDO_USE_API and api_client and auth_manager:
-            await handle_eldo_api(order_id, task_data)
-            db.update_order_status(order_id, ORDER_COMPLETED)
-            cleanup_files(task_data.get("files", []))
-            logger.info(f"Completed: {order_id}")
+            proofs_ok = await handle_eldo_api(order_id, task_data)
+            if proofs_ok:
+                db.update_order_status(order_id, ORDER_COMPLETED)
+                cleanup_files(task_data.get("files", []))
+                logger.info(f"Completed: {order_id}")
+            else:
+                # Giao hàng + chat đã xong nhưng bằng chứng chưa lên sàn. Nhánh
+                # Selenium chốt đúng bằng "Partial upload"; nhánh API trước đây
+                # luôn COMPLETED nên proof chết là mất im lặng (đơn 509DAFE8,
+                # 26/09). Giữ FAILED để recover_auth_failed() gửi lại proof.
+                import json
+                proof_tries = int(task_data.get("_proof_tries", 0)) + 1
+                retry_task = {k: v for k, v in task_data.items()
+                              if k != "_downloaded_tmp"}
+                retry_task["_proof_tries"] = proof_tries
+                if proof_tries < PROOF_MAX_TRIES:
+                    err_msg = ("PROOF_PENDING:attachment upload incomplete "
+                               f"(lượt {proof_tries})")
+                    logger.warning(f"Đã giao nhưng thiếu bằng chứng — "
+                                   f"sẽ gửi lại (lượt {proof_tries}): {order_id}")
+                else:
+                    # Hết lượt tự chữa — phải gửi tay bằng "Đã giao" trên ERP.
+                    err_msg = (f"PROOF_STUCK:khong gui duoc bang chung sau "
+                               f"{proof_tries} luot — gui lai tay tu ERP")
+                    logger.error(f"Bằng chứng KHÔNG lên được sau "
+                                 f"{proof_tries} lượt: {order_id}")
+                db.update_order_status(
+                    order_id, ORDER_FAILED,
+                    error_message=err_msg,
+                    retry_data=json.dumps(retry_task),
+                    retry_count=proof_tries)
         else:
             # Selenium mode, normal delivery
             files = task_data.get("files", [])
@@ -251,7 +283,47 @@ async def _talkjs_send_with_retry(order_id: str, conv_id: str,
     return None
 
 
-async def handle_eldo_api(order_id: str, task_data: dict):
+async def _talkjs_send_attachment_with_retry(order_id: str, conv_id: str,
+                                             local_path: str, display_name,
+                                             auth, max_retries: int = 2):
+    """Gửi đính kèm, thử lại khi 401 — đối xứng với _talkjs_send_with_retry.
+
+    Trước đây bước proof gọi thẳng ``send_attachment``: gặp 401 là trả None và
+    bằng chứng mất im lặng, còn bước chat ngay sau đó tự ``session/renew`` nên
+    vẫn gửi được — đơn thành Completed mà không có proof (509DAFE8, 26/09).
+    Mỗi lần thử sẽ upload lại file lên Firebase; đổi băng thông lấy đúng đắn.
+    """
+    for attempt in range(max_retries + 1):
+        if not await _talkjs_ensure_connected(auth):
+            logger.warning(f"[{order_id}] TalkJS chưa kết nối (lần {attempt + 1})")
+            continue
+
+        msg_id = await talkjs_client.send_attachment(
+            conv_id, local_path, display_name)
+        if msg_id:
+            return msg_id
+
+        # Thất bại — thường là 401 do session hết hạn. Lấy token mới rồi nối lại.
+        logger.warning(
+            f"[{order_id}] Gửi đính kèm lỗi (lần {attempt + 1}), làm mới auth")
+        try:
+            await talkjs_client.close()
+        except Exception:
+            pass
+        talkjs_client.auth_token = None
+        talkjs_client._is_connected = False
+        try:
+            jwt = await api_client.call_with_retry(api_client.get_talkjs_auth, auth)
+            talkjs_client.auth_token = jwt
+            talkjs_client.user_id = api_client.get_talkjs_user_id(jwt)
+        except Exception as e:
+            logger.warning(f"[{order_id}] Làm mới auth TalkJS thất bại: {e}")
+            break
+
+    return None
+
+
+async def handle_eldo_api(order_id: str, task_data: dict) -> bool:
     """Delivery via API — per-step with progress tracking."""
     from shared.eldo_api import AuthError
 
@@ -322,8 +394,8 @@ async def handle_eldo_api(order_id: str, task_data: dict):
 
                     # Tên hiển thị cho người mua — /tmp/erp_evidence_XXXX.mp4 vô nghĩa
                     display_name = fp.get("name") if isinstance(fp, dict) else None
-                    if not await talkjs_client.send_attachment(
-                            conv_id, local_path, display_name):
+                    if not await _talkjs_send_attachment_with_retry(
+                            order_id, conv_id, local_path, display_name, auth):
                         logger.warning(f"[{order_id}] Gửi đính kèm thất bại: {fp}")
                         continue
                     uploaded += 1
@@ -365,6 +437,14 @@ async def handle_eldo_api(order_id: str, task_data: dict):
                 logger.info(f"[{order_id}] No TalkJS conversation ID")
         except Exception as e:
             logger.warning(f"[{order_id}] Chat failed (non-fatal): {e}")
+
+    # Bằng chứng là cam kết với người mua nên nó quyết định đơn có xong hay
+    # chưa. Trả về cho process_task thay vì nuốt cảnh báo như trước.
+    proofs_ok = bool("proofs" in completed_steps or not files)
+    if not proofs_ok:
+        # Giao hàng và chat đã xong — lần gửi lại chỉ làm bước proof.
+        task_data["skip_steps"] = [s for s in completed_steps if s != "proofs"]
+    return proofs_ok
 
 
 # ── Eldorado Fast Delivery (Selenium) ──
@@ -636,7 +716,7 @@ async def run_worker():
             failed = db.get_orders_by_status("eldorado", ORDER_FAILED)
             for order in failed:
                 err = order.get("error_message", "")
-                if not err.startswith("AUTH_EXPIRED:"):
+                if not err.startswith(("AUTH_EXPIRED:", "PROOF_PENDING:")):
                     continue
                 order_id = order["order_id"]
                 if order_id in PROCESSING_TASKS:
