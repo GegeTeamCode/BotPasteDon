@@ -1,13 +1,12 @@
-"""Test G2G API endpoints — run locally via paramiko."""
-import paramiko, json, base64, time, shlex, os, sys
+"""Test G2G API endpoints — chạy tay từ máy local qua SSH (xem tests/_ssh.py)."""
+import json, base64, time, shlex, os, sys
 sys.stdout.reconfigure(encoding='utf-8')
 
 ORDER_ID = "1779277519044HQUA"
 
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('192.168.2.220', username='root', password='123456',
-            allow_agent=False, look_for_keys=False, timeout=15)
+from _ssh import connect
+
+ssh = connect()
 
 # Get auth
 stdin, stdout, stderr = ssh.exec_command('curl -s http://localhost:8010/auth/g2g', timeout=15)

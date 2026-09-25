@@ -1,7 +1,6 @@
-import paramiko
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('192.168.2.220', username='root', password='123456', allow_agent=False, look_for_keys=False, timeout=15)
+from _ssh import connect
+
+ssh = connect()
 
 script = r"""
 import sqlite3, sys
