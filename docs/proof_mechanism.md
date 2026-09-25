@@ -65,21 +65,60 @@ Upload qua web: mở order, click dialog **"Proof gallery"**, submit qua nút
 
 ---
 
-## 3. Eldorado — proof qua chat (không chính thức)
+## 3. Eldorado — proof là ĐÍNH KÈM THẬT trong chat TalkJS
 
-### API path — `eldorado_worker.handle_eldo_api` bước "proofs" (eldorado_worker.py:316)
+Eldorado không có endpoint `delivery_proof` chính thức; bằng chứng nằm trong
+hội thoại TalkJS. Từ 26/09/2026 nó là **đính kèm thật** (người mua thấy trình
+phát video / ảnh ngay trong khung chat), không còn là link dán vào tin nhắn.
+
+### API path — `eldorado_worker.handle_eldo_api` bước "proofs"
 1. Lấy `talkJsConversationId` từ `get_order_detail`.
-2. `_download_file(fp)` → local path.
-3. `talkjs_client.upload_file(local_path, conv_id)` → upload lên **Firebase storage** →
-   trả `url` → gom vào `proof_urls`.
-4. Gửi như đính kèm trong hội thoại **TalkJS**.
-5. Bước "chat" (step 3): nếu attach fail → gửi `proof_urls` dạng **link text**
-   (`Proof N: <url>`) trong tin nhắn.
+2. `_download_file(fp)` → local path (`/tmp/erp_evidence_*`).
+3. `talkjs_client.send_attachment(conv_id, local_path, display_name)`.
+4. Bước "chat" chỉ còn gửi lời nhắn trong `message.txt` — **không** kèm link nữa.
 
-Đặc điểm:
+### Vì sao phải đi backend cũ
+
+TalkJS có hai mặt API nhận payload khác nhau:
+
+| | Realtime WS `wss://realtime.talkjs.com/v1` | Backend cũ `https://app.talkjs.com/api/v0` |
+|---|---|---|
+| Dùng cho | tin nhắn text (`content` blocks) | đường trình duyệt dùng thật |
+| Gửi file | **bắt buộc `fileToken`** | nhận thẳng `attachment` + URL Firebase |
+| Cấp fileToken | chỉ secret key phía server | không cần — TalkJS **tự đúc** |
+
+Bot chỉ có JWT người dùng nên không xin được `fileToken`. Vì vậy đính kèm đi
+qua `POST /say/{convId}/` của backend cũ — TalkJS nhận URL Firebase rồi tự sinh
+`fileToken` và trả về tin nhắn `content:[{type:"file", …}]` hoàn chỉnh.
+
+### Ba chi tiết bắt buộc khớp với client thật
+
+1. **Đường lưu Firebase** `user_files/{appId}/{uuid-không-gạch}/{tên gốc}` —
+   đoạn giữa là UUID ngẫu nhiên mỗi lần, **không phải** conversation id.
+2. **`contentDisposition: inline`** cho mp4/png/jpg/gif/pdf… — thiếu nó thì
+   trình duyệt người mua **tải file về** thay vì xem ngay trong chat.
+3. **Id nội bộ**: `nymId` và conversation id trong URL đều là SHA-1 rút gọn
+   10 byte của id ngoài (`talkjs_internal_id`), nym thêm hậu tố `_n`.
+   Sai nym → `404 "Sender does not exist"`; sai conv → `400 "conversation_not_found"`.
+   Cả hai lỗi đều xảy ra **trước khi** tin nhắn được tạo, nên không sinh rác.
+
+Vector băm được khoá trong `tests/test_talkjs.py` — test đỏ nghĩa là có người
+đụng vào hàm băm, đừng sửa vector.
+
+### Header `x-talkjs-client-build`
+
+`TalkJSConfig.client_build` ghim bản frontend của TalkJS. Lấy lại khi cần:
+tải `https://app.talkjs.com/app/{appId}/user/0/inbox/chats` rồi đọc thẻ
+`<script src=".../browser-bundle-release-<hash>.js">`. Nếu TalkJS đổi bản và
+backend bắt đầu từ chối, cập nhật hằng này.
+
+### Đặc điểm
 - **Non-fatal**: cả bước proof bọc `try/except → warning`, đơn **vẫn complete** dù proof fail.
-- **Không có "delivery_proof" chính thức** trên Eldorado — proof chỉ nằm trong chat TalkJS.
-- `_download_file`: `str` (Discord) → trả luôn; `dict` (ERP) → tải `/tmp/erp_evidence_*`.
+- `_download_file`: `str` → trả luôn; `dict` (ERP) → tải `/tmp/erp_evidence_*`.
+  Tên tạm vô nghĩa nên phải truyền `display_name` = `fp["name"]` để người mua
+  thấy tên file thật.
+- `width`/`height`/`duration` đọc bằng `shared/media_probe.py` (parse header,
+  **không cần ffmpeg**). Thiếu số đo không phải lỗi — chỉ là thumbnail giật một nhịp.
 - Thứ tự bước: deliver → proofs → chat.
 
 ---
@@ -88,11 +127,11 @@ Upload qua web: mở order, click dialog **"Proof gallery"**, submit qua nút
 
 | | G2G | Eldorado |
 |---|---|---|
-| Đích upload | G2G S3 (presigned POST) | Firebase qua TalkJS |
-| Gắn vào | `delivery_proof` chính thức của order | tin nhắn/đính kèm trong chat |
-| Bắt buộc? | **CÓ** — thiếu proof → terminal, không complete | **KHÔNG** — fail thì gửi link, vẫn complete |
+| Đích upload | G2G S3 (presigned POST) | Firebase Storage của TalkJS |
+| Gắn vào | `delivery_proof` chính thức của order | đính kèm thật trong chat TalkJS |
+| Bắt buộc? | **CÓ** — thiếu proof → terminal, không complete | **KHÔNG** — fail thì bỏ qua, vẫn complete |
 | Lọc ext ở bot | jpg/jpeg/png/gif/mp4/mov | không (đẩy thẳng Firebase) |
-| Fallback | Selenium "Proof gallery" | Gửi URL text trong chat |
+| Fallback | Selenium "Proof gallery" | không có — proof fail thì bỏ qua |
 | Thứ tự bước | qty → proof → chat | deliver → proofs → chat |
 
 ---

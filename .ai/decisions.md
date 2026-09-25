@@ -5,6 +5,45 @@ Mới nhất ở trên cùng.
 
 ---
 
+## 2026-09-26 — Eldorado: proof thành đính kèm thật, bỏ link text
+
+**Quyết định:** Bằng chứng Eldorado gửi qua `TalkJSClient.send_attachment()` —
+đính kèm thật trong chat, người mua thấy trình phát video/ảnh ngay. Bỏ hẳn nhánh
+dán `Proof N: <url>` vào tin nhắn.
+
+**Ngữ cảnh:** Trước đây bot upload file lên Firebase rồi **dán URL dạng text** vào
+chat. Comment cũ trong `talkjs_client.py` ghi *"File attachment via REST API removed
+— TalkJS REST /say needs browser session"*, tức đã từng mò tới `/say` và kết luận
+phải có phiên trình duyệt. Kết luận đó **sai**: `/say` chạy được với JWT người dùng,
+chỉ là trước đó gọi nhầm mặt API và sai hình dạng payload.
+
+**Cơ chế thật (đọc từ bundle chatbox của TalkJS):**
+- Realtime WS đòi `content:[{type:"file", fileToken}]`; route cấp `fileToken` chỉ mở
+  cho secret key server → JWT người dùng không đi được. Đã dò 10 route, đều 404.
+- Backend cũ `POST /api/v0/{appId}/say/{convId}/?sessionId=` nhận thẳng
+  `attachment:{type:"file", subtype, url, size, filename, width, height, duration}`
+  với URL Firebase, rồi **TalkJS tự đúc `fileToken`**.
+- `nymId` và conv id trong URL là **SHA-1 rút gọn 10 byte** của id ngoài; nym thêm `_n`.
+
+**Alternative đã loại:**
+- *Xin `fileToken` bằng JWT người dùng*: không có route nào. Muốn có phải nhúng
+  secret key của Eldorado vào bot — không đời nào.
+- *Dùng Selenium điều khiển iframe TalkJS*: Eldo worker đang chạy `ELDO_USE_API=true`
+  (không trình duyệt). Bật lại Selenium chỉ để đính kèm là đổi ~1 GB RAM lấy một
+  lời gọi HTTP.
+- *Giữ link text làm fallback khi đính kèm fail*: bỏ. Proof vốn non-fatal; thêm
+  nhánh fallback là thêm đường code hiếm khi chạy, hiếm khi được test.
+
+**Đánh đổi đã biết:** `client_build` ghim bản frontend TalkJS. Nếu TalkJS đổi bản và
+backend từ chối header cũ thì phải cập nhật hằng — cách lấy lại ghi trong
+`docs/proof_mechanism.md` mục 3.
+
+**Kiểm chứng:** 3 lần gửi thật trên đơn đã hoàn thành — 1 ảnh PNG, 1 video 1080p/34s
+có audio, 1 video 1290x702/8s không audio. Cả 3 đều trả `content:[{type:"file", …}]`
+kèm `fileToken` do TalkJS sinh. Vector băm khoá trong `tests/test_talkjs.py`.
+
+---
+
 ## 2026-09-15 — Gỡ Discord hoàn toàn khỏi BotPasteDon
 
 **Quyết định:** Bỏ toàn bộ Discord: coordinator (bot + callback `:8030` + hàng đợi

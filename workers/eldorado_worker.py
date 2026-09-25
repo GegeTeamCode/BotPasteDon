@@ -257,7 +257,6 @@ async def handle_eldo_api(order_id: str, task_data: dict):
 
     auth = await auth_manager.get_auth()
     message = ""
-    proof_urls = []
     message_path = Path("message.txt")
     if message_path.exists():
         message = message_path.read_text(encoding="utf-8").strip() or "Done"
@@ -299,7 +298,7 @@ async def handle_eldo_api(order_id: str, task_data: dict):
             task_data["skip_steps"] = list(completed_steps)
             raise
 
-    # Step 2: Upload proof files + send via TalkJS
+    # Bước 2: Gửi bằng chứng thành đính kèm thật trong chat TalkJS
     if "proofs" not in completed_steps and files and talkjs_client:
         try:
             # Try to get conv_id if step 1 was skipped (from retry_data)
@@ -313,20 +312,20 @@ async def handle_eldo_api(order_id: str, task_data: dict):
 
                 uploaded = 0
                 for fp in files:
-                    # ERP sends files as dicts {url, name, evidence_id}
-                    # Need to download first, then upload to Firebase
+                    # ERP gửi file dạng dict {url, name, evidence_id} → tải về trước
                     local_path = await _download_file(fp)
                     if not local_path:
-                        logger.warning(f"[{order_id}] Failed to download: {fp}")
+                        logger.warning(f"[{order_id}] Tải bằng chứng thất bại: {fp}")
                         continue
                     if isinstance(fp, dict):
                         downloaded_tmp.append(local_path)  # /tmp copy → dọn sau
 
-                    file_info = await talkjs_client.upload_file(local_path, conv_id)
-                    if not file_info:
-                        logger.warning(f"[{order_id}] Failed to upload: {fp}")
+                    # Tên hiển thị cho người mua — /tmp/erp_evidence_XXXX.mp4 vô nghĩa
+                    display_name = fp.get("name") if isinstance(fp, dict) else None
+                    if not await talkjs_client.send_attachment(
+                            conv_id, local_path, display_name):
+                        logger.warning(f"[{order_id}] Gửi đính kèm thất bại: {fp}")
                         continue
-                    proof_urls.append(file_info["url"])
                     uploaded += 1
 
                 if uploaded == len(files):
@@ -339,7 +338,7 @@ async def handle_eldo_api(order_id: str, task_data: dict):
         except Exception as e:
             logger.warning(f"[{order_id}] Proof upload failed (non-fatal): {e}")
 
-    # Step 3: Send chat message (include proof URLs if file attachment failed)
+    # Bước 3: Gửi lời nhắn kèm theo
     if "chat" not in completed_steps and talkjs_client:
         try:
             if not conv_id:
@@ -347,22 +346,21 @@ async def handle_eldo_api(order_id: str, task_data: dict):
                     api_client.get_order_detail, order_id, auth)
                 conv_id = detail.get("talkJsConversationId", "")
             if conv_id:
-                # Build message with proof URLs as clickable links
-                full_msg = message
-                if proof_urls:
-                    links = "\n".join(f"Proof {i+1}: {url}" for i, url in enumerate(proof_urls))
-                    full_msg = f"{message}\n\n{links}"
-
-                if full_msg:
+                # Bằng chứng đã là đính kèm thật ở bước trước — chat chỉ còn lời nhắn
+                if message:
                     msg_id = await _talkjs_send_with_retry(
-                        order_id, conv_id, full_msg, auth)
+                        order_id, conv_id, message, auth)
                     if msg_id:
                         completed_steps.add("chat")
                         logger.info(f"[{order_id}] Chat sent")
                     else:
                         logger.warning(f"[{order_id}] Chat send failed after retry")
                 else:
-                    logger.warning(f"[{order_id}] Chat send failed")
+                    # message.txt trống/thiếu → không có gì để nhắn. Trước đây
+                    # link proof làm tin nhắn không rỗng nên che mất nhánh này;
+                    # nay proof là đính kèm riêng, phải chốt bước kẻo retry mãi.
+                    completed_steps.add("chat")
+                    logger.info(f"[{order_id}] Không có lời nhắn — bỏ qua bước chat")
             else:
                 logger.info(f"[{order_id}] No TalkJS conversation ID")
         except Exception as e:

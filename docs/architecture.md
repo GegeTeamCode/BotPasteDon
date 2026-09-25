@@ -74,7 +74,7 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 ### workers/
 
 **`workers/eldorado_worker.py`** — HTTP API (aiohttp, port 8001).
-- **API mode**: `deliver_order` → `upload_proof` (Firebase Storage) → `send_message` (TalkJS WebSocket)
+- **API mode**: `deliver_order` → `send_attachment` (proof = đính kèm thật, Firebase + TalkJS `/say/`) → `send_message` (TalkJS WebSocket)
 - **Selenium mode**: Click "Delivered" → upload proof qua TalkJS iframe → chat qua WS/REST
 - Per-step delivery voi `skip_steps` tracking trong DB `retry_data`
 - Recovery loop: 60s, check orders stuck in DELIVERING, retry tu step failed
@@ -84,7 +84,7 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 - **Selenium mode**: Fill qty → upload gallery → inject ProseMirror → send
 - JWT-expired recovery: check `error_message.startswith("JWT_EXPIRED:")`, retry khi co JWT moi
 
-**`workers/talkjs_client.py`** — TalkJS WebSocket client (Phoenix Protocol). File upload qua Firebase Storage resumable upload.
+**`workers/talkjs_client.py`** — TalkJS client. Text đi qua realtime WebSocket; đính kèm đi qua backend cũ `POST /say/{convId}/` (realtime API đòi `fileToken` mà JWT người dùng không xin được). `talkjs_internal_id()` = SHA-1 rút gọn 10 byte. Chi tiết: `docs/proof_mechanism.md` mục 3.
 
 **`workers/base_worker.py`** — Shared utilities: implicit-wait override, filename sanitizing, file cleanup.
 

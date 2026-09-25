@@ -10,7 +10,7 @@
 | Auth | 8010 | `python -m auth.main` | Capture + serve G2G JWT + Eldo cookies, refresh tự động |
 | Eldo Scanner | – | `python -m scanners.main --platform eldorado` | Poll pending orders, push ERP `new_order` |
 | G2G Scanner | – | `python -m scanners.main --platform g2g` | (same — G2G version) |
-| Eldo Worker | 8001 | `python -m workers.eldorado_worker` | Mark delivered, upload proof (Firebase), chat TalkJS |
+| Eldo Worker | 8001 | `python -m workers.eldorado_worker` | Mark delivered, proof = đính kèm thật trong chat TalkJS, chat |
 | G2G Worker | 8002 | `python -m workers.g2g_worker` | Submit qty, upload proof (S3), chat Sendbird |
 | Status Sync | – | `python -m status_sync` | Poll marketplace state (30 min), push ERP `status_update` |
 | Dashboard | 8766 | `python -m dashboard.server` | SSE log viewer, OTP relay, /health cards |
