@@ -129,6 +129,12 @@ SENDBIRD_SESSION_KEY = os.getenv("SENDBIRD_SESSION_KEY", "")
 
 # ── Eldorado API ──
 ELDO_USE_API = os.getenv("ELDO_USE_API", "false").lower() in ("true", "1", "yes")
+# How the auth service authenticates to Eldorado:
+#   cookie      — browser session (RefreshToken cookie, VNC re-login every ~30 days)
+#   seller_api  — Seller API client credentials → Bearer token (15 min), no browser
+ELDO_AUTH_MODE = os.getenv("ELDO_AUTH_MODE", "cookie").strip().lower()
+ELDO_SELLER_CLIENT_ID = os.getenv("ELDO_SELLER_CLIENT_ID", "").strip()
+ELDO_SELLER_CLIENT_SECRET = os.getenv("ELDO_SELLER_CLIENT_SECRET", "").strip()
 
 # ── Database ──
 # Resolve a relative DATABASE_PATH against the project root, NOT the process cwd.

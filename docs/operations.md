@@ -155,7 +155,11 @@ conn.close()
     "xsrf": true,                            // co XSRF token chua
     "logged_in": true,                       // session da login chua
     "refresh_token_expires_in": 2548000,     // giay con lai cua RefreshToken tren DIA, lay profile con lau nhat (null = khong profile nao con)
-    "refresh_token_profile": "chrome_profile_eldo"
+    "refresh_token_profile": "chrome_profile_eldo",
+    "auth_mode": "cookie",                   // gia tri ELDO_AUTH_MODE: cookie | seller_api
+    "bearer": false,                         // true = dang phat Bearer token cua Seller API
+    "bearer_expires_in": null,               // giay con lai cua token (token song 15 phut, auth xin lai khi con < 6 phut)
+    "seller_credential_expires_in": null     // giay con lai cua credential Seller API (null = chua doc duoc / khong dung)
   }
 }
 ```
@@ -464,6 +468,56 @@ print({k: (round(v/86400, 1) if v else v) for k, v in _eldo_rt_expires_in().item
 Neu tu doc bang `sqlite3.connect`, copy file kem `-wal` ra thu muc tam truoc (tranh lock + thay ban ghi moi nhat).
 Sau buoc 6, `/health` co `eldo.logged_in=true` + log `[ELDO] Backend refresh OK`, dashboard `:8766` hien
 badge **RT (re-login)** ~30d cho profile vua login.
+
+### Eldorado Auth — Seller API mode (Bearer token, khong can browser)
+
+Tu 2026-10-14 auth service co 2 che do cho Eldorado, chon bang `ELDO_AUTH_MODE` trong `.env`:
+
+| Gia tri | Y nghia |
+|---|---|
+| `cookie` (mac dinh) | Nhu cu: RefreshToken trong `chrome_profile_eldo*`, re-login VNC ~30 ngay |
+| `seller_api` | Doi Client ID + Client secret lay Bearer token song 15 phut. Khong browser, khong cookie |
+
+Chi tiet ky thuat: [marketplace_auth.md](marketplace_auth.md) muc "Seller API mode". Lo trinh + so do:
+[seller_api_migration_plan.md](seller_api_migration_plan.md).
+
+**Dat credential — chi lam tren server, KHONG dan vao chat, KHONG chup anh, KHONG commit:**
+
+1. Tao credential tai `https://www.eldorado.gg/dashboard/seller-api` (han 365 ngay). Client secret chi
+   hien MOT lan — luu vao trinh quan ly mat khau truoc khi dong cua so.
+2. SSH vao `.220`, mo `/opt/BotPasteDon/.env` bang editor (vd `nano`), them 3 dong:
+   ```
+   ELDO_AUTH_MODE=seller_api
+   ELDO_SELLER_CLIENT_ID=<client id>
+   ELDO_SELLER_CLIENT_SECRET=<client secret>
+   ```
+   Go tay/dan trong editor. Dung `echo ... >> .env` — lenh do nam lai trong shell history.
+3. `chmod 600 /opt/BotPasteDon/.env`
+4. Restart auth (muc "Restart Auth Service (chuan)" ben duoi). Chi auth doc 3 bien nay.
+5. Kiem: `curl -s localhost:8010/health` → `eldo.auth_mode="seller_api"`, `eldo.bearer=true`,
+   `eldo.bearer_expires_in` trong khoang 360–900. Log auth co `[ELDO] Seller API token OK`.
+
+**Thu tu khi deploy lan dau**: scanner_eldo, worker_eldo, status_sync phai chay ban code co
+`shared/eldo_auth.py` moi TRUOC khi auth chuyen sang `seller_api` (client cu khong biet gan Bearer →
+401 hang loat). Tuc: deploy code cho ca 4 service voi `ELDO_AUTH_MODE` con la `cookie`, kiem on, roi moi
+sua `.env` + restart auth.
+
+**Tu lui ve cookie**: neu Eldorado khong cap token (credential sai/het han/bi revoke, hoac cong token
+loi), auth bat `OPS ALERT [eldo-seller-api]` va phat bundle cookie nhu cu — voi dieu kien con it nhat 1
+profile co RefreshToken. Dau hieu: `/health` co `auth_mode="seller_api"` ma `bearer=false`. Token dang
+cam con song thi auth dung tiep token do (toi khi con < 60s) truoc khi lui. Cong token song lai thi tu
+quay ve Bearer o chu ky ke tiep.
+
+**Credential sap het han**: `OPS ALERT [eldo-seller-cred-expiring]` khi con < 14 ngay
+(`eldo.seller_credential_expires_in` tren `/health`). Xoay khong gian doan: tao credential moi (tai khoan
+duoc 2 cai), sua `.env`, restart auth, kiem `/health`, roi moi Revoke cai cu.
+
+**Tat**: sua `ELDO_AUTH_MODE=cookie`, restart auth.
+
+**Chua kiem duoc bang token** (phai thu tren 1 don Paid that co nguoi theo doi, ngay sau khi bat):
+doc delivery detail cua khach (`v1/orders/me/{id}/delivery-details/{detailId}`), lenh deliver, gui bang
+chung qua TalkJS. Mot trong ba bi tu choi → tat che do nay (dong tren) va ghi lai vao
+`seller_api_migration_plan.md`.
 
 ### G2G Auth — backend refresh
 

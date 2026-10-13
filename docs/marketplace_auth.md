@@ -83,6 +83,44 @@ Khi backend refresh fail (RefreshToken thuc su het han hoac response 401):
 
 RefreshToken slide ~30 ngay moi backend refresh, nhung neu bot dung > 30 ngay khong refresh thanh cong (hoac bi Eldo invalidate session), can re-login manual qua VNC. Quy trinh xem [operations.md](operations.md) muc "Eldorado Auth — backend refresh + session re-login".
 
+### Seller API mode (`ELDO_AUTH_MODE=seller_api`, tu 2026-10-14)
+
+Eldorado mo Seller API dau thang 10/2026: seller tao mot cap **Client ID + Client secret** tren
+`https://www.eldorado.gg/dashboard/seller-api` (toi da 2 credential/tai khoan, han 1–365 ngay, secret
+chi hien 1 lan). Bot doi cap do lay Bearer token — khong browser, khong cookie, khong XSRF.
+
+| Buoc | Contract (do that 2026-10-11) |
+|---|---|
+| Lay token | `POST https://www.eldorado.gg/api/authentication/seller/token`, body JSON `{"clientId","clientSecret"}` → 200 `{"accessToken","expiresIn":899,"tokenType":"Bearer"}`. Credential sai/het han/revoke → 401 `Authentication failed.` |
+| Token | JWT RS256, `iss=eldorado.fusionauth.io`, `gty=["client_credentials"]`, `sub`=client id, claim `userId`=seller id. Song 900s, KHONG co refresh token — het han thi xin lai |
+| Goi API | `Authorization: Bearer <accessToken>`. Khong can `Cookie`, `x-xsrf-token`, `nsure-device-id`, `x-client-build-time` |
+| Host | Luon `www.eldorado.gg`. Domain tran tra 301, POST bi doi thanh GET |
+| Song song | Mot credential cap nhieu token cung luc duoc |
+
+**Trong code** ([auth/main.py](../auth/main.py)):
+
+- `_eldo_seller_token()` xin token; `_eldo_seller_probe()` goi `GET /api/v1/orders/me/seller-api-eligibility`
+  (route co trong Swagger cua Seller API) de chac token duoc chap nhan; `_eldo_seller_credential_expiry()`
+  doc han credential qua `GET /api/client-credentials` (best-effort, route nay ngoai Swagger).
+- `EldoAuth.capture()` thu Seller API truoc. Thanh cong → `/auth/eldo` tra
+  `{auth_mode:"seller_api", bearer_token, expires_at, user_agent, seller_id, cookies:{}, xsrf_token:"", logged_in:true}`.
+- **Fallback**: khong lay duoc token → roi xuong duong cookie o tren (backend refresh → Camoufox) va bat
+  `OPS ALERT [eldo-seller-api]`. Token dang cam con > 60s thi dung tiep, chua lui. Thu lai cong token sau
+  60s (loi mang/5xx) hoac 300s (401).
+- `EldoAuth.is_fresh()`: bundle token chi "fresh" khi token con > 360s (= client cache 300s + 60s dem),
+  nen client khong bao gio cam token het han. Auth xin token moi moi ~9 phut.
+- Client ([shared/eldo_auth.py](../shared/eldo_auth.py)): `EldoAuthData.build_headers()` thay bundle co
+  `bearer_token` thi chi gui `user-agent`, `accept`, `authorization`.
+
+**Secret** chi nam trong `/opt/BotPasteDon/.env` tren `.220` (`ELDO_SELLER_CLIENT_ID`,
+`ELDO_SELLER_CLIENT_SECRET`), quyen 600; khong bao gio vao log, `/health`, hay git. Cach bat/tat/xoay:
+[operations.md](operations.md) muc "Eldorado Auth — Seller API mode".
+
+**Pham vi**: Seller API chi cam ket cac route trong Swagger (offer + don hang). Bot con dung vai route
+ngoai Swagger (`orders/me/{id}`, `orders/me/statesCount`, `conversations/me/authorize`, `users/me`,
+`library`) — hien van chay bang token nhung Eldorado khong cam ket giu. Bang day du:
+[seller_api_migration_plan.md](seller_api_migration_plan.md) muc 2.2.
+
 ---
 
 ## G2G.com

@@ -25,11 +25,23 @@ class EldoAuthData:
     nsure_device_id: str = ""
     x_client_build_time: str = ""
     updated_at: float = 0.0
+    # Seller API mode (auth service runs with ELDO_AUTH_MODE=seller_api):
+    # a Bearer token replaces the cookie session entirely.
+    bearer_token: str = ""
+    expires_at: float = 0.0
 
     def cookie_header(self) -> str:
         return "; ".join(f"{k}={v}" for k, v in self.cookies.items())
 
     def build_headers(self) -> dict:
+        if self.bearer_token:
+            # No Cookie / XSRF / anti-fraud headers: the Seller API authenticates
+            # on the token alone (measured 2026-10-11).
+            return {
+                "user-agent": self.user_agent,
+                "accept": "application/json, text/plain, */*",
+                "authorization": f"Bearer {self.bearer_token}",
+            }
         headers = {
             "user-agent": self.user_agent,
             "accept": "application/json, text/plain, */*",
@@ -116,10 +128,16 @@ class EldoAuthManager:
             nsure_device_id=j.get("nsure_device_id", ""),
             x_client_build_time=j.get("x_client_build_time", ""),
             updated_at=time.time(),
+            bearer_token=j.get("bearer_token", "") or "",
+            expires_at=float(j.get("expires_at") or 0),
         )
         self._expires_at = time.time() + self.TTL
+        if self._cache.bearer_token and self._cache.expires_at:
+            # Never cache a seller token past its own expiry.
+            self._expires_at = min(self._expires_at, self._cache.expires_at - 30)
         logger.info(
-            "Eldorado auth fetched: cookies=%d | xsrf=%s | nsure=%s | build=%s | seller=%s",
+            "Eldorado auth fetched: mode=%s | cookies=%d | xsrf=%s | nsure=%s | build=%s | seller=%s",
+            "seller_api" if self._cache.bearer_token else "cookie",
             len(cookies), "yes" if xsrf else "no",
             "yes" if j.get("nsure_device_id") else "no",
             "yes" if j.get("x_client_build_time") else "no",

@@ -9,11 +9,13 @@ Usage:
 Endpoints:
     GET /auth/g2g     → {jwt_token, cookies, user_agent, seller_id}
     GET /auth/eldo    → {cookies, xsrf_token, user_agent}
+                        or, with ELDO_AUTH_MODE=seller_api, {bearer_token, expires_at, user_agent}
     GET /health       → {status, uptime, jwt_expires_in}
 """
 
 import asyncio
 import base64
+import calendar
 import json
 import os
 import signal
@@ -30,7 +32,10 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
 from shared.alerts import clear_ops_alert, send_ops_alert
-from shared.config import CHROME_BINARY_PATH, HEADLESS_MODE, DATABASE_PATH, G2G_EMAIL, G2G_PASSWORD
+from shared.config import (
+    CHROME_BINARY_PATH, HEADLESS_MODE, DATABASE_PATH, G2G_EMAIL, G2G_PASSWORD,
+    ELDO_AUTH_MODE, ELDO_SELLER_CLIENT_ID, ELDO_SELLER_CLIENT_SECRET,
+)
 from shared.constants import DEFAULT_USER_AGENT
 from shared.database import Database
 from shared.logging_config import setup_logger
@@ -110,6 +115,19 @@ ELDO_API_PROBE = "https://www.eldorado.gg/api/orders/me/statesCount"
 # CDP probe — direct AWS Cognito calls fail with SECRET_HASH errors because
 # Eldorado's Cognito client is configured with a client secret we don't have.
 ELDO_REFRESH_URL = "https://www.eldorado.gg/api/authentication/refreshTokens"
+
+# Seller API (ELDO_AUTH_MODE=seller_api): client credentials → Bearer token, no
+# browser. Always the www host — the apex domain 301s and a redirected POST
+# turns into a GET. Measured 2026-10-11, see docs/seller_api_migration_plan.md.
+ELDO_SELLER_TOKEN_URL = "https://www.eldorado.gg/api/authentication/seller/token"
+# Probe on a route that is part of the published Seller API (the cookie probe
+# above is not), so it keeps working if undocumented routes get locked down.
+ELDO_SELLER_PROBE_URL = "https://www.eldorado.gg/api/v1/orders/me/seller-api-eligibility"
+ELDO_SELLER_CREDENTIALS_URL = "https://www.eldorado.gg/api/client-credentials"
+# Serve a seller token only while it has more than this left: clients cache a
+# bundle for 300s (EldoAuthManager.TTL), so they never hold an expired token.
+ELDO_SELLER_TOKEN_MIN_LEFT = 360
+ELDO_SELLER_CRED_WARN_DAYS = 14
 
 G2G_PROFILES = ["chrome_profile_g2g"]
 ELDO_PROFILES = ["chrome_profile_eldo", "chrome_profile_eldo_bak1", "chrome_profile_eldo_bak2"]
@@ -912,6 +930,103 @@ def _eldo_backend_refresh(cookies: dict, xsrf_token: str, user_agent: str = "",
     return updated
 
 
+def _eldo_seller_token(client_id: str, client_secret: str) -> tuple:
+    """Trade Seller API client credentials for a Bearer access token.
+
+    Returns ({"access_token", "expires_in"}, 200) on success, else
+    (None, <HTTP status, or 0 on a transport error>). 401 means the credential
+    is wrong, expired or revoked — retrying will not help. The secret is never
+    logged; Eldorado's error bodies don't echo it either.
+    """
+    from curl_cffi import requests as _cffi
+    try:
+        r = _cffi.post(
+            ELDO_SELLER_TOKEN_URL,
+            headers={
+                "accept": "application/json",
+                "content-type": "application/json",
+                "user-agent": DEFAULT_USER_AGENT,
+            },
+            json={"clientId": client_id, "clientSecret": client_secret},
+            impersonate="chrome136",
+            timeout=20,
+            allow_redirects=False,
+        )
+    except Exception as e:
+        logger.warning("[ELDO] seller token exception: %s", e)
+        return None, 0
+    if r.status_code != 200:
+        logger.warning("[ELDO] seller token HTTP %d | body=%s",
+                       r.status_code, (r.text or "")[:200])
+        return None, r.status_code
+    try:
+        j = r.json()
+    except Exception as e:
+        logger.warning("[ELDO] seller token 200 but not JSON: %s", e)
+        return None, 0
+    token = j.get("accessToken") or ""
+    if not token:
+        logger.warning("[ELDO] seller token 200 but no accessToken in body")
+        return None, 0
+    try:
+        expires_in = int(j.get("expiresIn") or 0)
+    except (TypeError, ValueError):
+        expires_in = 0
+    return {"access_token": token, "expires_in": expires_in}, 200
+
+
+def _eldo_seller_probe(token: str) -> int:
+    """HTTP status of an authenticated Seller API call made with `token`
+    (0 on a transport error). 401/403 = the token is not accepted."""
+    from curl_cffi import requests as _cffi
+    try:
+        r = _cffi.get(
+            ELDO_SELLER_PROBE_URL,
+            headers={
+                "accept": "application/json",
+                "user-agent": DEFAULT_USER_AGENT,
+                "authorization": f"Bearer {token}",
+            },
+            impersonate="chrome136",
+            timeout=10,
+        )
+        return r.status_code
+    except Exception:
+        return 0
+
+
+def _eldo_seller_credential_expiry(token: str, client_id: str) -> Optional[float]:
+    """Epoch seconds at which the Seller API credential itself expires, or None.
+
+    Best-effort only: this route backs the dashboard page and is not part of
+    the published Seller API, so any failure just means "unknown".
+    """
+    from curl_cffi import requests as _cffi
+    try:
+        r = _cffi.get(
+            ELDO_SELLER_CREDENTIALS_URL,
+            headers={
+                "accept": "application/json",
+                "user-agent": DEFAULT_USER_AGENT,
+                "authorization": f"Bearer {token}",
+            },
+            impersonate="chrome136",
+            timeout=10,
+        )
+        if r.status_code != 200:
+            return None
+        for cred in r.json() or []:
+            if str(cred.get("clientId", "")).lower() != client_id.lower():
+                continue
+            # e.g. "2027-10-14T07:14:23.0254447Z" — 7 fractional digits, which
+            # fromisoformat() rejects; whole seconds in UTC are plenty here.
+            raw = str(cred.get("expirationDate") or "")
+            return float(calendar.timegm(time.strptime(raw[:19], "%Y-%m-%dT%H:%M:%S")))
+    except Exception:
+        return None
+    return None
+
+
 def _eldo_capture_isolated(profile_dir: str, timeout_sec: int = 200) -> dict:
     """Run one Camoufox capture in a spawned subprocess with a hard timeout.
 
@@ -1041,6 +1156,100 @@ class EldoAuth(PlatformAuth):
         # Camoufox.
         self._last_cookies: dict = {}
         self._last_user_agent: str = DEFAULT_USER_AGENT
+        # Seller API mode (ELDO_AUTH_MODE=seller_api).
+        self._seller_retry_at: float = 0.0              # don't ask for a token before this
+        self._seller_cred_exp: Optional[float] = None   # when the credential itself expires
+        self._seller_cred_checked_at: float = 0.0
+
+    def is_fresh(self) -> bool:
+        # A seller token is served only while it outlives the clients' 5-minute
+        # cache. A cookie bundle — including the fallback one in seller_api
+        # mode — keeps the base-class 13-minute rule.
+        if self.data and self.data.get("bearer_token"):
+            return self.data.get("expires_at", 0) - time.time() > ELDO_SELLER_TOKEN_MIN_LEFT
+        return super().is_fresh()
+
+    def _capture_seller_api(self) -> Optional[dict]:
+        """Mint a Seller API Bearer token from the client credentials in .env.
+        Returns a full auth `data` dict, or None to fall back to the cookie path."""
+        if not ELDO_SELLER_CLIENT_ID or not ELDO_SELLER_CLIENT_SECRET:
+            send_ops_alert(
+                "eldo-seller-api",
+                "⚠️ [ELDO] ELDO_AUTH_MODE=seller_api nhưng .env thiếu ELDO_SELLER_CLIENT_ID / "
+                "ELDO_SELLER_CLIENT_SECRET — bot đang chạy bằng cookie.",
+            )
+            return None
+        now = time.time()
+        if now < self._seller_retry_at:
+            return None
+
+        tok, status = _eldo_seller_token(ELDO_SELLER_CLIENT_ID, ELDO_SELLER_CLIENT_SECRET)
+        probe = _eldo_seller_probe(tok["access_token"]) if tok else 0
+        if not tok or probe in (401, 403):
+            rejected = status == 401 or probe in (401, 403)
+            # A rejected credential won't heal by itself; a network blip might.
+            self._seller_retry_at = now + (300 if rejected else 60)
+            if rejected:
+                msg = ("🔴 [ELDO] Seller API từ chối credential (sai, hết hạn hoặc đã revoke) — "
+                       "tạo credential mới ở eldorado.gg/dashboard/seller-api rồi sửa .env. ")
+            else:
+                msg = f"⚠️ [ELDO] Seller API không cấp được token (HTTP {status}) — "
+            send_ops_alert("eldo-seller-api", msg + "Bot tạm chạy bằng cookie.")
+            return None
+
+        token = tok["access_token"]
+        ttl = tok["expires_in"] or max(0, int((_jwt_exp(token) or 0) - now)) or 600
+        data = {
+            "auth_mode": "seller_api",
+            "bearer_token": token,
+            "expires_at": now + ttl,
+            "user_agent": self._last_user_agent or DEFAULT_USER_AGENT,
+            "seller_id": _jwt_claim(token, "userId") or "",
+            # Kept (empty) so consumers of the cookie-era bundle shape don't break.
+            "cookies": {},
+            "xsrf_token": "",
+            "logged_in": True,
+            "api_verified": probe == 200,
+            "refreshed_via": "eldo_seller_api",
+        }
+        self.data = data
+        self.captured_at = now
+        self._consecutive_failures = 0
+        self._seller_retry_at = 0.0
+        clear_ops_alert("eldo-seller-api")
+        clear_ops_alert("eldo-all")
+        self._note_seller_credential_expiry(token)
+        logger.info("[ELDO] Seller API token OK (expires in %ds, probe HTTP %d)", ttl, probe)
+        return data
+
+    def _note_seller_credential_expiry(self, token: str) -> None:
+        """Re-read the credential's own expiry every 6h and warn ahead of it —
+        once it lapses the token endpoint answers 401 and only the cookie
+        fallback keeps the bot running."""
+        now = time.time()
+        if now - self._seller_cred_checked_at < 6 * 3600:
+            return
+        self._seller_cred_checked_at = now
+        exp = _eldo_seller_credential_expiry(token, ELDO_SELLER_CLIENT_ID)
+        if exp is None:
+            return
+        self._seller_cred_exp = exp
+        days = (exp - now) / 86400
+        logger.info("[ELDO] Seller API credential expires in %.1f days", days)
+        if days < ELDO_SELLER_CRED_WARN_DAYS:
+            send_ops_alert(
+                "eldo-seller-cred-expiring",
+                f"⏳ [ELDO] Credential Seller API còn {days:.0f} ngày — tạo credential mới ở "
+                "eldorado.gg/dashboard/seller-api, sửa .env, restart auth, rồi revoke cái cũ.",
+                cooldown=24 * 3600,
+            )
+        else:
+            clear_ops_alert("eldo-seller-cred-expiring")
+
+    def seller_credential_expires_in(self) -> Optional[int]:
+        if self._seller_cred_exp is None:
+            return None
+        return int(max(0, self._seller_cred_exp - time.time()))
 
     def _try_backend_refresh(self) -> Optional[dict]:
         """Mint a fresh IdToken via Eldorado's /api/authentication/refreshTokens
@@ -1320,6 +1529,22 @@ class EldoAuth(PlatformAuth):
             self._x_client_build_time = bt
 
     def capture(self) -> dict:
+        # Seller API mode: a Bearer token minted from client credentials — no
+        # browser, no cookies. If Eldorado won't issue one, fall through to the
+        # cookie path below rather than leave the scanner and worker blind.
+        if ELDO_AUTH_MODE == "seller_api":
+            seller_data = self._capture_seller_api()
+            if seller_data:
+                return seller_data
+            if self.data and self.data.get("bearer_token"):
+                # The token we already hold still works: keep serving it and
+                # retry minting on the next call, instead of waking Camoufox
+                # over what is usually a blip.
+                if self.data.get("expires_at", 0) - time.time() > 60:
+                    return self.data
+                # A dead seller token must not be re-served as "the last good bundle".
+                self.data = None
+
         # Back off if capture keeps failing
         if self._consecutive_failures >= 3:
             since_last = time.time() - self._last_failure_time
@@ -1534,6 +1759,7 @@ async def handle_health(request: web.Request):
     # longest (failover rotates to it once the others die).
     eldo_rt = {p: s for p, s in _eldo_rt_expires_in().items() if s is not None}
     eldo_rt_profile = max(eldo_rt, key=eldo_rt.get) if eldo_rt else None
+    eldo_bearer = bool(eldo_auth.data and eldo_auth.data.get("bearer_token"))
 
     return web.json_response({
         "status": "ok",
@@ -1564,6 +1790,15 @@ async def handle_health(request: web.Request):
             "logged_in": bool(eldo_auth.data and eldo_auth.data.get("logged_in")),
             "refresh_token_expires_in": eldo_rt[eldo_rt_profile] if eldo_rt_profile else None,
             "refresh_token_profile": eldo_rt_profile,
+            # Seller API mode. `bearer` false while auth_mode is seller_api means
+            # the bot fell back to the cookie session — check the ops alerts.
+            "auth_mode": ELDO_AUTH_MODE,
+            "bearer": eldo_bearer,
+            "bearer_expires_in": (
+                int(max(0, eldo_auth.data.get("expires_at", 0) - time.time()))
+                if eldo_bearer else None
+            ),
+            "seller_credential_expires_in": eldo_auth.seller_credential_expires_in(),
         },
     })
 
@@ -1690,6 +1925,10 @@ async def run_auth_service():
     site = web.TCPSite(runner, "0.0.0.0", AUTH_PORT)
     await site.start()
     logger.info("Auth service listening on port %d (PID: %d)", AUTH_PORT, os.getpid())
+    if ELDO_AUTH_MODE not in ("cookie", "seller_api"):
+        logger.warning("[ELDO] Unknown ELDO_AUTH_MODE=%r — using cookie", ELDO_AUTH_MODE)
+    else:
+        logger.info("[ELDO] Auth mode: %s", ELDO_AUTH_MODE)
 
     # Heartbeat — start BEFORE initial capture so watchdog doesn't restart us
     async def heartbeat():

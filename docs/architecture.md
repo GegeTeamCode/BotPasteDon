@@ -48,6 +48,7 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 
 - **G2G**: Two-tier (backend refresh `POST sls.g2g.com/user/refresh_access` ~1s + Chrome+CDP fallback ~30-60s). JWT song 15 phut, refresh moi 13 phut.
 - **Eldorado**: Camoufox (anti-detect Firefox) capture cookies + XSRF token. 3 profiles: main, bak1, bak2 — rotate khi profile fail.
+  Tu 2026-10-14 co them che do `ELDO_AUTH_MODE=seller_api`: doi Client ID + secret lay Bearer token (15 phut), khong browser; khong lay duoc token thi tu lui ve duong cookie.
 - Endpoints: `GET /auth/g2g`, `GET /auth/eldo`, `GET /health`, `POST /auth/otp`
 - 5-min client cache. Auto-retry capture khi auth het han.
 
@@ -295,6 +296,7 @@ Xem [docs/marketplace_auth.md](marketplace_auth.md) cho chi tiet endpoint contra
 - Cookies critical: `__Host-EldoradoIdToken` (JWT, TTL ~1h), `__Host-EldoradoRefreshToken` (TTL ~30 ngay), `__Host-XSRF-TOKEN`
 - 3 profiles: `chrome_profile_eldo` (main), `_bak1`, `_bak2`
 - Auth service rotate profile khi capture fail
+- **Seller API mode** (`ELDO_AUTH_MODE=seller_api`, 2026-10-14): `POST /api/authentication/seller/token` voi Client ID + secret trong `.env` → Bearer token song 900s, `/auth/eldo` tra `bearer_token` thay cho cookie. Day la duong THU TRUOC; hai tang ben duoi thanh duong lui. Chi tiet: [marketplace_auth.md](marketplace_auth.md) muc "Seller API mode".
 
 **Two-tier refresh strategy** (Phase 4, 2026-06-08):
 
