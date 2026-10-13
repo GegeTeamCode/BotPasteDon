@@ -129,3 +129,19 @@ mới nhất ở trên cùng.
     (terminal, giữ nguyên văn). Verify classification bằng AST-isolated
     `_classify_error`: S3/connection → network, webp/heic → terminal.
   - `docs/proof_mechanism.md` sync phân loại lỗi mới (doc-sync trước commit).
+
+## 2026-10-14
+
+- `feat(eldorado): Seller API auth mode (Bearer token), cookie fallback` — `bf12ea7`
+  - `ELDO_AUTH_MODE=seller_api`: auth đổi Client ID + secret (trong `.env`) lấy Bearer
+    token 15 phút, `/auth/eldo` trả `bearer_token`; client gắn `Authorization: Bearer`.
+    Không lấy được token thì alert `eldo-seller-api` và rơi xuống đường cookie cũ.
+    Mặc định vẫn `cookie`.
+  - `/health.eldo` thêm `auth_mode`, `bearer`, `bearer_expires_in`,
+    `seller_credential_expires_in`. Không bỏ trường cũ.
+  - Chưa đổi route đơn hàng sang `/api/v1` (chờ thử deliver bằng token trên đơn thật).
+  - Verify: `tests/test_eldo_seller_auth.py` — mã thật chạy với Eldorado giả trên
+    localhost, 44 phép kiểm. Chưa chạy với credential thật.
+  - Doc-sync: `docs/operations.md` (mục "Eldorado Auth — Seller API mode" + schema
+    `/health`), `docs/marketplace_auth.md`, `docs/architecture.md`,
+    `docs/seller_api_migration_plan.md`.
