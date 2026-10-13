@@ -4,12 +4,19 @@ Lập ngày 2026-10-11. Cập nhật 2026-10-14.
 
 | Bước | Trạng thái |
 |---|---|
-| 0 — Chủ tạo credential | chưa |
-| 1 — Dịch vụ auth phát token | **mã đã viết 14/10**, chưa commit, chưa deploy |
-| 2 — Client gắn header Bearer | **mã đã viết 14/10**, chưa commit, chưa deploy |
+| 0 — Chủ tạo credential | xong 14/10 (hạn 365 ngày, nằm trong `.env` trên `.220`, quyền 600) |
+| 1 — Dịch vụ auth phát token | **xong**, deploy 14/10 04:36 (`bf12ea7`) |
+| 2 — Client gắn header Bearer | **xong**, deploy 14/10 04:36 (`bf12ea7`) |
 | 3 — Đổi sang route đơn hàng `v1` | chưa (cố ý để sau Bước 4) |
-| 4 — Thử trên một đơn Paid thật | chưa |
-| 5 — Bật hẳn, dọn dẹp | chưa |
+| 4 — Thử trên một đơn Paid thật | **một phần**: các lệnh đọc đã thử thật 14/10; deliver và gửi TalkJS chờ đơn thật đầu tiên |
+| 5 — Bật hẳn, dọn dẹp | **đã bật `seller_api` 14/10 05:24**; dọn dẹp sau hai tuần chạy ổn |
+
+Kết quả thử thật ngày 14/10 (credential thật, gọi bằng chính `EldoradoAPIClient` trên `.220`):
+`statesCount`, `users/me`, `library`, danh sách đơn theo trạng thái (Paid/Delivered/Received/
+Completed/Disputed), chi tiết một đơn, **`v1/orders/me/{id}/delivery-details/{detailId}`** (trên một
+đơn Delivered, trả đúng giá trị) và `conversations/me/authorize` đều 200 với header chỉ gồm
+`accept`, `authorization`, `user-agent`. Auth log: `Seller API token OK (expires in 899s, probe HTTP
+200)`, hạn credential đọc được (364,8 ngày).
 
 Tài liệu này dành cho người nhận việc sửa repo này. Phần G2G không liên quan và không đổi.
 Cơ chế xác thực hiện hành được mô tả ở `docs/marketplace_auth.md`; kế hoạch này thay phần
@@ -62,7 +69,7 @@ hiện vẫn chạy bằng token nhưng Eldorado không cam kết giữ.
 | `deliver_order` | `PUT orders/me/{id}/deliver` | có, **đã đánh dấu lỗi thời**; bản thay là `PUT v1/orders/me/{id}/deliver` | chưa thử (lệnh này đổi trạng thái đơn thật) |
 | `get_order_detail` | `GET orders/me/{id}` | không | 200 |
 | `get_states_count` | `GET orders/me/statesCount` | không | 200 |
-| `get_delivery_detail_value` | `GET v1/orders/me/{id}/delivery-details/{detailId}` | không | chưa thử được (các đơn Completed gần nhất không còn detail) |
+| `get_delivery_detail_value` | `GET v1/orders/me/{id}/delivery-details/{detailId}` | không | 200 (thử 14/10 trên một đơn Delivered) |
 | `get_talkjs_auth` | `GET conversations/me/authorize` | không | 200, trả token TalkJS |
 | `get_user_profile` | `GET users/me` | không | 200 |
 | `_fetch_game_library` | `GET library?locale=en-US` | không | 200 |

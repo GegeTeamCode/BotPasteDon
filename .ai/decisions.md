@@ -126,8 +126,11 @@ dấu vân tay.
 **Cơ chế (không đổi code, chỉ config):** [`check_keywords`](../scanners/base_scanner.py)
 chạy **blacklist trước, whitelist sau**. Whitelist rỗng → skip block whitelist →
 allow-all. Deploy: edit `.env` trên `.220` (gitignored runtime state — `deploy_git.py`
-git reset không đụng) → restart 2 scanner (watchdog-safe). `.env` backup
-`.env.bak-20260627-020841`.
+git reset không đụng) → restart 2 scanner (watchdog-safe). Bản sao `.env` trước thay đổi
+(`.env.bak-20260627-020841`) đã xoá 2026-10-14 cùng các bản sao `.env` cũ khác (chứa secret,
+quyền 644). Giá trị bộ lọc trước 27/06, để lùi nếu cần:
+`SCANNER_WHITELIST=Divine Orb, Chaos Orb, Mirror of Kalandra, Gold, Boss Materials, Runes, Currency, Gems, Flawless Horadric, Items`
+và `SCANNER_BLACKLIST=Boosting, Leveling, Account, Custom oder, Any Items`.
 
 **Verify** (`scripts/_verify_filter.py`, chạy trên `.220` nạp config thật): 10/10 case
 đúng — DROP `Any Gears`/`Any Items - Aspects`/`Boosting`/`Account`; PASTE Mageblood/

@@ -649,6 +649,27 @@ nohup venv/bin/python scripts/watchdog.py > /tmp/watchdog.log 2>&1 &
 
 Auth service co auto-cleanup tu **2026-06-04**: startup va shutdown deu pkill browser con + xoa lock files (Firefox `parent.lock/.parentlock/lock` + Chrome `Singleton*`) tren toan bo 4 profile g2g/eldo/bak1/bak2. Atexit safety net them de phong SIGKILL.
 
+**⚠️ KIEM TRUOC KHI RESTART AUTH — 2 phien co the chi con trong RAM:**
+
+1. **Eldorado**: `curl -s localhost:8010/health` → `eldo.refresh_token_expires_in` phai khac `null`
+   (xem muc "Eldorado Auth"). O che do `seller_api` thi restart khong can phien cookie, nhung phien do
+   van la duong lui.
+2. **G2G**: xem `uptime` tren `/health`. Auth chi lam moi token G2G TRONG RAM; profile
+   `chrome_profile_g2g` tren dia chi duoc cap nhat luc Chrome that su chay (cold start / login tay).
+   Phien tren dia song ~12–15 ngay ke tu lan do. **`uptime` > ~10 ngay (864000s) → coi nhu restart se
+   doi login G2G tay (captcha + OTP qua VNC)**: hen chu ngoi san o VNC roi moi restart.
+   `g2g.refresh_token_expires_in` la han cua token TRONG RAM, khong noi gi ve dia.
+   Su co 2026-10-14 04:36: auth uptime 18 ngay, restart de deploy → `[G2G] Session expired` →
+   `Captcha detected — opening VNC` → scanner/worker G2G nhan 503, mu ~7 phut toi khi chu login tay.
+   Cach cuu: chu login trong cua so Chrome auth tu mo tren :99 → `kill -TERM` tien trinh Chrome chinh
+   (dong em de cookie ghi ra dia) → auth tu nhan (`Manual login successful!`), hoac
+   `curl -X POST localhost:8010/auth/relogin/chrome_profile_g2g`.
+
+**`deploy_git.py` va service do watchdog dung lai**: service nao tung bi watchdog respawn thi nam trong
+cgroup cua `bot-watchdog.service`; buoc `systemctl stop bot-watchdog.service` cua script gui SIGTERM
+cho no luon du khong neu ten. Kiem `cut -d: -f3 /proc/<pid>/cgroup`; neu thay, them ten service do vao
+lenh deploy (vd `deploy_git.py worker_g2g auth`) de no duoc dung lai ngay, ngoai cgroup cua watchdog.
+
 → Restart chuan chi can:
 ```bash
 # Stop watchdog truoc (de tranh auto-respawn auth dang dung)

@@ -145,3 +145,12 @@ mới nhất ở trên cùng.
   - Doc-sync: `docs/operations.md` (mục "Eldorado Auth — Seller API mode" + schema
     `/health`), `docs/marketplace_auth.md`, `docs/architecture.md`,
     `docs/seller_api_migration_plan.md`.
+
+- Deploy `efea447` 04:36 + bật `ELDO_AUTH_MODE=seller_api` 05:24 (chủ thêm credential vào `.env`).
+  - Sự cố lúc deploy: restart auth sau uptime 18 ngày làm mất phiên G2G trên đĩa → G2G mù
+    04:36→04:43, chủ login VNC. 3 đơn giao trễ ~5 phút (worker tự retry, đều giao đủ), không
+    đơn nào mất. Cảnh báo + cách cứu đã ghi vào `docs/operations.md` → "Restart Auth Service".
+  - Thử thật bằng token trên `.220`: mọi lệnh đọc của `EldoradoAPIClient` 200, kể cả
+    `delivery-details/{detailId}` và TalkJS authorize. Còn chờ đơn thật: deliver + gửi TalkJS.
+  - Xoá 5 bản sao `.env.bak*` cũ trên `.220` (secret, quyền 644); giá trị bộ lọc trước 27/06
+    chép vào `.ai/decisions.md`.
