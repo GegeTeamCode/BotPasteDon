@@ -154,3 +154,9 @@ mới nhất ở trên cùng.
     `delivery-details/{detailId}` và TalkJS authorize. Còn chờ đơn thật: deliver + gửi TalkJS.
   - Xoá 5 bản sao `.env.bak*` cũ trên `.220` (secret, quyền 644); giá trị bộ lọc trước 27/06
     chép vào `.ai/decisions.md`.
+
+- 2026-10-15 — Soát lại hai luồng Eldorado ở chế độ `seller_api` (`docs/seller_api_migration_plan.md` mục 2.3).
+  - Kiểm 15/10 01:10: không có đơn Eldorado mới từ 14/10 03:40 (đơn mới nhất trên Eldorado trùng với DB bot).
+  - Thử nửa TalkJS bằng token (không gửi gì): token TalkJS đúng user seller, WS `/session/renew` OK.
+    Lệnh duy nhất còn phụ thuộc token mà chưa thử: `PUT orders/me/{id}/deliver`.
+  - status_sync: 67/67 chu kỳ từ lúc `.220` khởi động lại 14/10 13:16 lấy auth ở `mode=seller_api`, đối soát Eldorado `fail=0`.

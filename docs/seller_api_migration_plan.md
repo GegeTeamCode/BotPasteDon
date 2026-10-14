@@ -1,6 +1,6 @@
 # Kế hoạch: chuyển phần Eldorado của BotPasteDon sang Seller API
 
-Lập ngày 2026-10-11. Cập nhật 2026-10-14.
+Lập ngày 2026-10-11. Cập nhật 2026-10-15.
 
 | Bước | Trạng thái |
 |---|---|
@@ -8,7 +8,7 @@ Lập ngày 2026-10-11. Cập nhật 2026-10-14.
 | 1 — Dịch vụ auth phát token | **xong**, deploy 14/10 04:36 (`bf12ea7`) |
 | 2 — Client gắn header Bearer | **xong**, deploy 14/10 04:36 (`bf12ea7`) |
 | 3 — Đổi sang route đơn hàng `v1` | chưa (cố ý để sau Bước 4) |
-| 4 — Thử trên một đơn Paid thật | **một phần**: các lệnh đọc đã thử thật 14/10; deliver và gửi TalkJS chờ đơn thật đầu tiên |
+| 4 — Thử trên một đơn Paid thật | **một phần**: các lệnh đọc đã thử thật 14/10; nửa TalkJS (lấy token, mở phiên chat) thử 15/10; còn lệnh deliver và gửi thật bằng chứng/tin nhắn, chờ đơn thật đầu tiên (xem mục 2.3) |
 | 5 — Bật hẳn, dọn dẹp | **đã bật `seller_api` 14/10 05:24**; dọn dẹp sau hai tuần chạy ổn |
 
 Kết quả thử thật ngày 14/10 (credential thật, gọi bằng chính `EldoradoAPIClient` trên `.220`):
@@ -80,6 +80,54 @@ và `GET v1/orders/me/sold-order-data` (CSV có phí sàn và thu nhập ròng t
 
 Lưu ý về tài liệu của Eldorado: trang dashboard in ví dụ `PUT /api/orders/me/{orderId}/delivered`.
 Route đó trả 404. Route đúng là `.../deliver`.
+
+### 2.3 Hai luồng chính ở chế độ `seller_api` (soát lại 15/10/2026)
+
+**Luồng 1 — phát hiện và paste đơn mới** (scanner, 15–25 giây một lượt):
+
+| Bước | Lệnh gọi | Đã thử bằng token |
+|---|---|---|
+| Tìm đơn chờ giao | `GET orders/me/seller/orders?orderState=Paid` (bản cũ, lỗi thời) | 200 (14/10); chạy 1 lượt/giây trong 60 giây: 61/61 lượt 200 |
+| Lọc theo từ khoá | không gọi Eldorado | — |
+| Chi tiết đơn | `GET orders/me/{id}` | 200 |
+| Thông tin nhận hàng của khách | `GET v1/orders/me/{id}/delivery-details/{detailId}` | 200 (trên một đơn Delivered) |
+| Tên game | `GET library` | 200 |
+| Đẩy sang ERP | webhook ERP, không dùng auth Eldorado | — |
+
+Mọi lệnh gọi của luồng này đã thử riêng từng cái. Chưa có đơn thật nào đi trọn chuỗi ở chế độ
+`seller_api`: đơn Eldorado mới nhất tạo lúc 13/10 20:40 UTC (14/10 03:40 giờ VN), trước lúc bật.
+Kiểm 15/10 01:10: đơn mới nhất trên Eldorado cũng là đơn đó, nên bot không sót đơn nào.
+
+**Luồng 2 — bấm delivered, gửi bằng chứng và lời nhắn** (worker, khi ERP gửi task "Đã giao"):
+
+| Bước | Lệnh gọi | Đã thử bằng token |
+|---|---|---|
+| Đọc trạng thái và id hội thoại | `GET orders/me/{id}` (`state`, `talkJsConversationId`) | 200 |
+| Bấm delivered | `PUT orders/me/{id}/deliver` (bản cũ, lỗi thời; bản `v1` cùng dạng, không body) | **chưa** — lệnh này đổi trạng thái đơn thật |
+| Lấy token TalkJS | `GET conversations/me/authorize` | 200; 15/10: user trong token TalkJS trùng seller id của tài khoản, token sống khoảng 1 giờ |
+| Mở phiên chat | WebSocket `realtime.talkjs.com` + `/session/renew` bằng token TalkJS | 15/10: thành công (mở rồi đóng, không gửi gì) |
+| Tải file bằng chứng | Firebase Storage của TalkJS | không dùng auth Eldorado |
+| Gửi đính kèm | `POST app.talkjs.com/api/v0/say/{conversationId}/` bằng token TalkJS | không dùng auth Eldorado; chưa gửi thật |
+| Gửi lời nhắn | WebSocket TalkJS (lùi sang REST), nội dung lấy từ `message.txt` | không dùng auth Eldorado; chưa gửi thật |
+
+Task `fast_delivery` chỉ làm bước "Bấm delivered". Như vậy lệnh duy nhất còn phụ thuộc token mà
+chưa thử là `deliver`. Nó nằm trong Swagger nên khả năng bị từ chối thấp. Nếu bị 401/403, worker
+đánh đơn `FAILED` với `AUTH_EXPIRED` và thử lại bằng đúng loại token đó, nên đơn sẽ đứng ở Paid
+trên Eldorado. Cách xử lý: đặt `ELDO_AUTH_MODE=cookie`, restart auth, để lượt thử lại tự giao.
+Vì vậy đơn Eldorado thật đầu tiên cần có người theo dõi tới khi lên Delivered.
+
+**Luồng phụ — status_sync** (10 phút một chu kỳ, chỉ đọc, không có lệnh ghi nào):
+`GET orders/me/statesCount`, `GET orders/me/seller/orders` theo từng trạng thái (50 đơn/trang),
+`GET orders/me/{id}` khi đối soát với ERP. Dùng chung `EldoradoAPIClient` và `EldoAuthManager` với
+scanner nên tự chuyển sang token từ 14/10. Từ lúc `.220` khởi động lại (14/10 13:16) tới 15/10
+01:25: 67/67 chu kỳ lấy auth ở `mode=seller_api` và chạy xong, đối soát Eldorado mỗi chu kỳ
+`fail=0`. Route vẫn là bản cũ, đổi cùng Bước 3.
+
+**Giới hạn đọc** (đo 14/10): 45 lượt mỗi khoảng 5 giây, tính theo IP và gộp mọi route; không
+tính theo tài khoản hay token. Bot hiện dùng chưa tới 1 lượt/giây.
+
+**Restart đã an toàn:** `.220` khởi động lại lúc 14/10 13:16; auth tự lên lại ở `seller_api`,
+không cần ai đăng nhập.
 
 ---
 
@@ -177,7 +225,8 @@ Xong khi: một đơn thật đi trọn vòng quét → paste ERP → giao → b
 
 Đặt lại `ELDO_AUTH_MODE=cookie` rồi restart `auth.main`. Ngoài ra auth tự lùi về cookie mỗi khi
 không lấy được token. Cả hai đường lùi đều cần ít nhất một profile cookie còn sống trong hai tuần đầu. Lúc lập kế hoạch này (theo ghi chép ngày 05/10):
-`chrome_profile_eldo` hết hạn 15/10, `chrome_profile_eldo_bak1` hết hạn 04/11.
+`chrome_profile_eldo` hết hạn 15/10, `chrome_profile_eldo_bak1` hết hạn 04/11. Ngày 15/10: `chrome_profile_eldo` hết trong ngày, `_bak2` đã
+đăng xuất, chỉ còn `_bak1` làm đường lùi.
 
 ---
 
