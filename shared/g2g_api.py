@@ -6,17 +6,27 @@ On 401/403: forces auth service to re-capture JWT, then retries once.
 
 import asyncio
 import json
-import logging
 import random
 from typing import Dict, List, Optional, Tuple
 
 from curl_cffi import requests as cffi
 
+from shared.alerts import send_ops_alert, clear_ops_alert
 from shared.g2g_auth import G2GAuthData, G2GAuthManager
+from shared.logging_config import setup_logger
 
-logger = logging.getLogger("g2g.api")
+# setup_logger, không phải logging.getLogger: logger trần không có handler nên
+# dòng INFO (Chat sent, Uploaded …) bị mất và WARNING ra stderr không có giờ.
+logger = setup_logger("g2g.api")
 
 BASE = "https://sls.g2g.com"
+
+# Sendbird — chat G2G. Từ HAR trình duyệt / frontend G2G. Mọi lệnh gọi Sendbird
+# chỉ cần header Session-Key (đo 22/10/2026: App-ID không bắt buộc, JWT G2G không
+# dùng). Xem docs/marketplace_chat.md mục 2.
+SENDBIRD_APP_ID = "34201740-152E-401E-AD8F-5C72EEABA386"
+SENDBIRD_BASE = f"https://api-{SENDBIRD_APP_ID.lower()}.sendbird.com/v3"
+SENDBIRD_KEY_ALERT = "g2g-sendbird-key"
 
 # list_my_order returns only 10 rows by default; G2G honors `page_size` (verified
 # live: page_size=100 -> 100 rows). Larger window so a burst of pending orders
@@ -45,6 +55,41 @@ class RateLimitError(APIError):
     def __init__(self, msg, retry_after=60):
         super().__init__(msg, status=429)
         self.retry_after = retry_after
+
+
+class SendbirdError(APIError):
+    """Sendbird từ chối hoặc lỗi.
+
+    Cố ý KHÔNG kế thừa AuthError: lỗi Sendbird không nói gì về JWT G2G, và
+    AuthError làm call_with_retry vô hiệu cache JWT.
+    """
+
+
+class SendbirdKeyError(SendbirdError):
+    """SENDBIRD_SESSION_KEY thiếu, sai hoặc bị thu hồi (mã 4003xx / 400401)."""
+
+
+class ChatError(APIError):
+    """Bước chat chưa xong.
+
+    ``progress`` giữ những gì đã làm được — ``buyer_id``, ``channel_url``,
+    ``card_sent`` — để lần gửi lại đi tiếp từ đó, khỏi gọi lại G2G và khỏi gửi
+    trùng thẻ đơn.
+    """
+
+    def __init__(self, msg, progress: Optional[dict] = None, status=0):
+        super().__init__(msg, status)
+        self.progress = dict(progress or {})
+
+
+def _is_sendbird_key_error(code) -> bool:
+    try:
+        code = int(code)
+    except (TypeError, ValueError):
+        return False
+    # 4003xx = nhóm lỗi xác thực của Sendbird (đã thấy 400303 "Session key is
+    # invalid."); 400401 = không gửi Session-Key nào.
+    return 400300 <= code < 400400 or code == 400401
 
 
 # G2G order/upload_url rejects any other extension with HTTP 400
@@ -292,12 +337,14 @@ class G2GAPIClient:
 
     # ── Chat APIs ─────────────────────────────────────────────────────────
 
-    # Sendbird config — from HAR 8 / G2G frontend
-    _SENDBIRD_APP_ID = "34201740-152E-401E-AD8F-5C72EEABA386"
-
     def create_chat_channel(self, seller_id: str, buyer_id: str,
                             auth: G2GAuthData) -> str:
-        """Create/get chat channel via G2G API, returns Sendbird channel_url."""
+        """Create/get chat channel via G2G API, returns Sendbird channel_url.
+
+        Trả "" khi G2G không trả channel_url. Không tự dựng tên kênh: thứ tự id
+        trong channel_url không cố định (22/10: 33/50 kênh buyer trước, 17/50
+        seller trước), đoán sai là gửi vào kênh không tồn tại.
+        """
         r = self._sess.post(
             f"{BASE}/chat/channel",
             headers=auth.build_headers(),
@@ -311,29 +358,83 @@ class G2GAPIClient:
             timeout=30,
         )
         j = self._parse(r, "chat_channel")
-        details = j.get("payload", {}).get("channel_details", {})
-        return details.get("channel_url", f"g2g_dm_{buyer_id}_{seller_id}")
+        details = (j.get("payload") or {}).get("channel_details") or {}
+        return details.get("channel_url") or ""
+
+    @staticmethod
+    def _sendbird_headers(session_key: str) -> dict:
+        return {
+            "Session-Key": session_key,
+            "App-ID": SENDBIRD_APP_ID,
+            "Content-Type": "application/json",
+        }
+
+    def _parse_sendbird(self, resp, context: str) -> dict:
+        """Trả JSON khi Sendbird nhận lệnh, ngược lại ném SendbirdError.
+
+        Lỗi Sendbird là HTTP 4xx kèm body ``{"error": true, "code", "message"}``.
+        Khoá hỏng thì bắn ops alert một lần mỗi 6 giờ; gọi được lại thì gỡ.
+        """
+        status = resp.status_code
+        try:
+            j = resp.json()
+        except Exception:
+            j = None
+        if status == 200 and isinstance(j, dict) and not j.get("error"):
+            clear_ops_alert(SENDBIRD_KEY_ALERT)
+            return j
+        j = j if isinstance(j, dict) else {}
+        code = j.get("code")
+        detail = (f"{context}: Sendbird HTTP {status} code={code} "
+                  f"{str(j.get('message') or '')[:160]}").rstrip()
+        if _is_sendbird_key_error(code):
+            send_ops_alert(
+                SENDBIRD_KEY_ALERT,
+                f"🔴 [G2G] Sendbird từ chối SENDBIRD_SESSION_KEY (code={code}) — chat G2G "
+                "ngừng, đơn vẫn giao. Lấy khoá mới từ HAR trình duyệt (trang chat G2G), "
+                "sửa .env trên .220, restart worker_g2g (KHÔNG cần restart auth).",
+            )
+            raise SendbirdKeyError(detail, status)
+        raise SendbirdError(detail, status)
+
+    def find_chat_channel(self, seller_id: str, buyer_id: str,
+                          session_key: str) -> str:
+        """Tìm kênh DM có sẵn giữa seller và buyer chỉ bằng Sendbird (không JWT).
+
+        Dùng khi ``chat/channel`` của G2G lỗi. Trả "" nếu hai bên chưa từng có
+        kênh — trường hợp đó vẫn phải để G2G tạo kênh.
+        """
+        r = self._sess.get(
+            f"{SENDBIRD_BASE}/users/{seller_id}/my_group_channels",
+            params={"members_exactly_in": buyer_id, "limit": 5},
+            headers=self._sendbird_headers(session_key),
+            timeout=30,
+        )
+        j = self._parse_sendbird(r, "sendbird_find_channel")
+        chans = [c for c in (j.get("channels") or []) if c.get("channel_url")]
+        dm = [c for c in chans if c.get("custom_type") == "dm"]
+        pick = dm or chans
+        return pick[0]["channel_url"] if pick else ""
 
     def send_chat_message(self, channel_url: str, message: str,
                           session_key: str, user_id: str = "",
                           data: str = "", custom_type: str = "") -> dict:
-        app_id = self._SENDBIRD_APP_ID
+        """Gửi một tin MESG. Ném SendbirdError nếu Sendbird không tạo được tin."""
         body = {"message_type": "MESG", "message": message, "user_id": user_id}
         if data:
             body["data"] = data
         if custom_type:
             body["custom_type"] = custom_type
         r = self._sess.post(
-            f"https://api-{app_id.lower()}.sendbird.com/v3/group_channels/{channel_url}/messages",
-            headers={
-                "Session-Key": session_key,
-                "App-ID": app_id,
-                "Content-Type": "application/json",
-            },
+            f"{SENDBIRD_BASE}/group_channels/{channel_url}/messages",
+            headers=self._sendbird_headers(session_key),
             json=body,
             timeout=30,
         )
-        return r.json()
+        j = self._parse_sendbird(r, "sendbird_send")
+        if not j.get("message_id"):
+            raise SendbirdError("sendbird_send: HTTP 200 nhưng không có message_id", 200)
+        return j
 
     # ── Step helpers for per-step delivery ──────────────────────────────────
 
@@ -408,133 +509,89 @@ class G2GAPIClient:
                 f"delivery_proof: all {len(unsupported)} proof file(s) unsupported "
                 f"file type, manual upload needed: {unsupported}", 400)
 
+    async def _resolve_channel(self, order_item_id: str, seller_id: str,
+                               buyer_id: str, auth: G2GAuthData,
+                               session_key: str) -> str:
+        """channel_url của kênh seller–buyer: hỏi G2G trước, lỗi thì tìm qua Sendbird.
+
+        ``chat/channel`` là lệnh duy nhất của bước chat phụ thuộc máy chủ G2G và
+        đã làm mất chat của 4 đơn 16–17/10 (HTTP 500/502, timeout). Gặp AuthError
+        cũng chỉ lùi sang Sendbird: call_with_retry đã vô hiệu cache JWT, gọi lại
+        G2G ngay bằng JWT vừa chết làm G2G đá phiên.
+        """
+        try:
+            url = await self.call_with_retry(
+                self.create_chat_channel, seller_id, buyer_id, auth)
+            if url:
+                return url
+            reason = "chat/channel không trả channel_url"
+        except Exception as e:
+            reason = str(e)[:160]
+        logger.warning("[%s] Không mở được kênh qua G2G (%s) — tìm kênh có sẵn qua Sendbird",
+                       order_item_id, reason)
+        url = self.find_chat_channel(seller_id, buyer_id, session_key)
+        if not url:
+            raise APIError(f"chat: không mở được kênh ({reason}) và Sendbird chưa có "
+                           f"kênh nào với buyer {buyer_id}")
+        logger.info("[%s] Dùng kênh có sẵn trên Sendbird", order_item_id)
+        return url
+
     async def _send_chat(self, order_item_id: str, message: str,
-                          auth: G2GAuthData, seller_id: str = ""):
-        """Send chat messages as a single step."""
-        detail = await self.call_with_retry(
-            self.get_order_detail, order_item_id, auth, seller_id)
-        buyer_id = str(detail.get("buyer_id", ""))
+                          auth: G2GAuthData, seller_id: str = "",
+                          progress: Optional[dict] = None) -> dict:
+        """Gửi thẻ đơn + lời nhắn cho người mua. Trả ``progress`` khi xong.
 
-        if not buyer_id:
-            logger.info("[%s] Chat: no buyer_id", order_item_id)
-            return
-
-        channel_url = await self.call_with_retry(
-            self.create_chat_channel, seller_id, buyer_id, auth)
-        session_key = auth.sendbird_session_key or ""
-
-        if not channel_url or not session_key:
-            logger.info("[%s] Chat: no session key or channel", order_item_id)
-            return
-
-        order_url = f"https://www.g2g.com/g2g-user/sale/order/item/{order_item_id}"
-        order_msg = f"Sold Order Item {order_item_id} {order_url}"
-        chat_data = json.dumps({
-            "source": "api",
-            "order_item_id": order_item_id,
-            "buyer_id": buyer_id,
-            "seller_id": seller_id,
-        })
-        self.send_chat_message(
-            channel_url, order_msg, session_key, seller_id,
-            data=chat_data, custom_type="order-item")
-
-        await asyncio.sleep(3)
-
-        self.send_chat_message(
-            channel_url, message, session_key, seller_id)
-        logger.info("[%s] Chat sent to buyer %s", order_item_id, buyer_id)
-
-    # ── Full delivery flow with auto-retry ────────────────────────────────
-
-    async def full_delivery(self, order_item_id: str, qty: int,
-                            file_paths: list, message: str,
-                            auth: G2GAuthData, seller_id: str = "",
-                            skip_steps: set = None) -> dict:
-        """Execute complete delivery via API.
-
-        skip_steps: set of step names already completed, e.g. {"qty", "proof"}
+        Lỗi gì cũng ném ``ChatError`` kèm ``progress`` (``buyer_id``,
+        ``channel_url``, ``card_sent``); truyền lại ``progress`` đó ở lần gửi
+        sau để đi tiếp — có đủ ``buyer_id`` và ``channel_url`` thì không gọi G2G
+        lần nào, đã gửi thẻ thì không gửi trùng.
         """
         if not seller_id:
             seller_id = auth.seller_id or self._seller_id or ""
-        skip = skip_steps or set()
+        p = dict(progress or {})
+        p["card_sent"] = bool(p.get("card_sent"))
+        session_key = auth.sendbird_session_key or ""
+        try:
+            if not session_key:
+                send_ops_alert(
+                    SENDBIRD_KEY_ALERT,
+                    "🔴 [G2G] SENDBIRD_SESSION_KEY trống trong .env — chat G2G không gửi được.",
+                )
+                raise SendbirdKeyError("SENDBIRD_SESSION_KEY trống trong .env")
 
-        logger.info("[%s] API delivery start | qty=%d | files=%d | skip=%s",
-                     order_item_id, qty, len(file_paths), skip)
-
-        # 1. Submit delivered qty
-        if "qty" not in skip:
-            await self.call_with_retry(
-                self.submit_delivered_qty, order_item_id, qty, auth, seller_id)
-            logger.info("[%s] delivered_qty=%d OK", order_item_id, qty)
-        else:
-            logger.info("[%s] Skipping qty (already done)", order_item_id)
-
-        # 2. Upload proof files
-        if "proof" not in skip and file_paths:
-            upload_list = []
-            for fp in file_paths:
-                filename = fp.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-                presigned = await self.call_with_retry(
-                    self.get_upload_url, filename, auth, seller_id)
-                if not presigned.get("url"):
-                    logger.warning("[%s] No upload URL for %s", order_item_id, filename)
-                    continue
-                new_name = presigned.get("new_filename", filename)
-                s3_key = presigned.get("fields", {}).get("key", f"delivery_proof/{new_name}")
-                ok = self.upload_to_s3(presigned, fp)
-                if ok:
-                    upload_list.append(s3_key)
-                    logger.info("[%s] Uploaded %s → %s", order_item_id, filename, s3_key)
-
-            if upload_list:
-                await self.call_with_retry(
-                    self.submit_delivery_proof, order_item_id, upload_list, auth, seller_id)
-                logger.info("[%s] delivery_proof submitted (%d files)",
-                             order_item_id, len(upload_list))
-        elif "proof" in skip:
-            logger.info("[%s] Skipping proof upload (already done)", order_item_id)
-
-        # 3. Send chat message via Sendbird REST
-        if "chat" not in skip and message:
-            try:
+            if not p.get("buyer_id"):
                 detail = await self.call_with_retry(
                     self.get_order_detail, order_item_id, auth, seller_id)
-                buyer_id = str(detail.get("buyer_id", ""))
+                p["buyer_id"] = str(detail.get("buyer_id") or "")
+                if not p["buyer_id"]:
+                    raise APIError("chat: chi tiết đơn không có buyer_id")
 
-                if buyer_id:
-                    channel_url = await self.call_with_retry(
-                        self.create_chat_channel, seller_id, buyer_id, auth)
-                    session_key = auth.sendbird_session_key or ""
-                    if channel_url and session_key:
-                        order_url = f"https://www.g2g.com/g2g-user/sale/order/item/{order_item_id}"
-                        order_msg = f"Sold Order Item {order_item_id} {order_url}"
-                        chat_data = json.dumps({
-                            "source": "api",
-                            "order_item_id": order_item_id,
-                            "buyer_id": buyer_id,
-                            "seller_id": seller_id,
-                        })
-                        self.send_chat_message(
-                            channel_url, order_msg, session_key, seller_id,
-                            data=chat_data, custom_type="order-item")
+            if not p.get("channel_url"):
+                p["channel_url"] = await self._resolve_channel(
+                    order_item_id, seller_id, p["buyer_id"], auth, session_key)
 
-                        await asyncio.sleep(1)
+            if not p["card_sent"]:
+                order_url = f"https://www.g2g.com/g2g-user/sale/order/item/{order_item_id}"
+                chat_data = json.dumps({
+                    "source": "api",
+                    "order_item_id": order_item_id,
+                    "buyer_id": p["buyer_id"],
+                    "seller_id": seller_id,
+                })
+                self.send_chat_message(
+                    p["channel_url"], f"Sold Order Item {order_item_id} {order_url}",
+                    session_key, seller_id, data=chat_data, custom_type="order-item")
+                p["card_sent"] = True
+                await asyncio.sleep(3)
 
-                        self.send_chat_message(
-                            channel_url, message, session_key, seller_id)
-                        logger.info("[%s] Chat sent (order card + message) to buyer %s",
-                                     order_item_id, buyer_id)
-                    else:
-                        logger.info("[%s] Chat: no session key, skipping", order_item_id)
-                else:
-                    logger.info("[%s] Chat: no buyer_id in order detail", order_item_id)
-            except Exception as e:
-                logger.warning("[%s] Chat send failed: %s", order_item_id, e)
-        elif "chat" in skip:
-            logger.info("[%s] Skipping chat (already done)", order_item_id)
-
-        return {"status": "completed", "order_item_id": order_item_id}
+            self.send_chat_message(p["channel_url"], message, session_key, seller_id)
+        except ChatError:
+            raise
+        except Exception as e:
+            raise ChatError(f"chat: {type(e).__name__}: {str(e)[:250]}", progress=p,
+                            status=getattr(e, "status", 0)) from e
+        logger.info("[%s] Chat sent to buyer %s", order_item_id, p["buyer_id"])
+        return p
 
     def close(self):
         try:

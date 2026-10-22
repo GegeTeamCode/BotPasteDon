@@ -5,6 +5,27 @@ mới nhất ở trên cùng.
 
 ---
 
+## 2026-10-22
+
+- `fix(chat): kiem phan hoi Sendbird, kenh du phong, gui lai loi nhan CHAT_PENDING`
+  - G2G: `_parse_sendbird` (loi → `SendbirdError`; ma 4003xx/400401 → `SendbirdKeyError` + ops alert
+    `g2g-sendbird-key`); `chat/channel` loi/401/thieu `channel_url` → tim kenh co san qua Sendbird
+    `members_exactly_in`; bo ten kenh tu dung `g2g_dm_{buyer}_{seller}` (sai 17/50 kenh, do 22/10).
+  - Bo vong thu lai chat ngay sau loi auth (co the goi G2G bang JWT vua chet → G2G da phien);
+    luot quet gui lai gap G2G tu choi JWT thi dung ca luot.
+  - Ca hai san: chat hong → don van `COMPLETED`, `error_message=CHAT_PENDING:`, `retry_data={"chat"}`;
+    vong hoi phuc 60s gui lai rieng loi nhan, gian 1/5/30/60 phut, 5 luot roi `CHAT_STUCK:` + alert.
+  - Logger `g2g.api`, `eldo.api` dung `setup_logger` (truoc do mat dong INFO "Chat sent").
+  - Xoa `full_delivery` chet o `g2g_api.py`/`eldo_api.py`.
+  - Verify: `tests/test_marketplace_chat.py` (16 phep kiem, Sendbird/G2G/TalkJS gia + DB tam),
+    `tests/test_talkjs.py` van xanh, import scanners/status_sync OK. Venv test Python 3.14 + dung ban
+    thu vien nhu .220 (server chay Python 3.10 — ma khong dung cu phap moi hon 3.10).
+  - Doc-sync: `docs/marketplace_chat.md` (tai lieu moi cung ngay), `docs/architecture.md`,
+    `docs/proof_mechanism.md` (bang chung Eldorado khong con "non-fatal" tu `533b305`),
+    `docs/seller_api_migration_plan.md` (bang 2.3: khong co duong REST cho loi nhan).
+  - Kiem truoc do (22/10, GET chi doc len Sendbird tu .220): chat G2G chi can Session-Key; khoa tu
+    20/05/2026 van song; 20/20 don Completed gan nhat co the don + loi nhan tren Sendbird.
+
 ## 2026-09-15
 
 - `feat: remove Discord entirely — scanners push orders straight to ERP` — commit `180c0a8`, deploy .220

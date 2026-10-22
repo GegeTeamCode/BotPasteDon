@@ -4,7 +4,6 @@ Uses curl_cffi with browser impersonation for anti-fingerprinting.
 Auth: Cookie-based session + x-xsrf-token header.
 """
 
-import logging
 import random
 import base64
 import json
@@ -14,8 +13,11 @@ from functools import lru_cache
 from curl_cffi import requests as cffi
 
 from shared.eldo_auth import EldoAuthData, EldoAuthManager
+from shared.logging_config import setup_logger
 
-logger = logging.getLogger("eldo.api")
+# setup_logger, không phải logging.getLogger: logger trần không có handler nên
+# dòng INFO (Delivered via API, Resolved delivery detail) bị mất.
+logger = setup_logger("eldo.api")
 
 BASE = "https://www.eldorado.gg/api"
 
@@ -260,46 +262,6 @@ class EldoradoAPIClient:
             return claims.get("sub", "")
         except Exception:
             return ""
-
-    # ── Full delivery flow ─────────────────────────────────────────────────
-
-    async def full_delivery(self, order_id: str, auth: EldoAuthData,
-                            message: str = "", talkjs_client=None) -> dict:
-        logger.info("[%s] API delivery start", order_id)
-
-        # 1. Deliver order
-        await self.call_with_retry(self.deliver_order, order_id, auth)
-        logger.info("[%s] Delivered OK", order_id)
-
-        # 2. Send chat message via TalkJS
-        if message and talkjs_client:
-            try:
-                detail = await self.call_with_retry(
-                    self.get_order_detail, order_id, auth)
-                conv_id = detail.get("talkJsConversationId", "")
-                if conv_id:
-                    if not talkjs_client.auth_token:
-                        jwt = await self.call_with_retry(
-                            self.get_talkjs_auth, auth)
-                        talkjs_client.auth_token = jwt
-                        talkjs_client.user_id = self.get_talkjs_user_id(jwt)
-
-                    if not talkjs_client.is_connected:
-                        await talkjs_client.connect()
-
-                    if talkjs_client.is_connected:
-                        msg_id = await talkjs_client.send_text_message(conv_id, message)
-                        if not msg_id:
-                            await talkjs_client.send_text_message_rest(conv_id, message)
-                    else:
-                        await talkjs_client.send_text_message_rest(conv_id, message)
-                    logger.info("[%s] Chat message sent", order_id)
-                else:
-                    logger.info("[%s] No TalkJS conversation ID", order_id)
-            except Exception as e:
-                logger.warning("[%s] Chat send failed: %s", order_id, e)
-
-        return {"status": "completed", "order_id": order_id}
 
     def close(self):
         try:

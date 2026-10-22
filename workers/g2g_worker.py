@@ -34,7 +34,10 @@ from shared.constants import (
 from shared.database import Database
 from shared.driver_manager import get_driver
 from shared.logging_config import setup_logger
-from workers.base_worker import cleanup_files, _executor
+from workers.base_worker import (
+    cleanup_files, _executor, read_message, mark_chat_pending, due_chat_retries,
+    clear_chat_pending, complete_order,
+)
 
 logger = setup_logger("worker.g2g")
 
@@ -203,8 +206,9 @@ async def process_task(task_data: dict):
         logger.info(f"Processing: {order_id}, {len(task_data.get('files', []))} files")
         db.update_order_status(order_id, ORDER_DELIVERING)
 
+        chat_pending = None
         if G2G_USE_API and api_client and auth_manager:
-            await handle_g2g_api(order_id, task_data)
+            chat_pending = await handle_g2g_api(order_id, task_data)
         else:
             await handle_g2g(
                 driver, task_data["order_url"],
@@ -213,7 +217,12 @@ async def process_task(task_data: dict):
                 order_id,
             )
 
-        db.update_order_status(order_id, ORDER_COMPLETED)
+        if chat_pending:
+            # Hàng đã giao đủ — đơn COMPLETED, chỉ lời nhắn còn chờ gửi lại.
+            mark_chat_pending(db, "g2g", order_id, chat_pending["payload"],
+                              chat_pending["error"])
+        else:
+            complete_order(db, order_id)
         cleanup_files(task_data.get("files", []))
         logger.info(f"Completed: {order_id}")
 
@@ -375,15 +384,19 @@ async def _undelivered_qty(api_id: str, auth):
     return info["undelivered_qty"]
 
 
-async def handle_g2g_api(order_id: str, task_data: dict):
-    """Delivery via REST API — runs steps individually to track progress."""
+async def handle_g2g_api(order_id: str, task_data: dict) -> Optional[dict]:
+    """Delivery via REST API — runs steps individually to track progress.
+
+    Lỗi ở bước qty/proof ném ra (process_task xếp lịch thử lại cả đơn). Lỗi ở
+    bước chat KHÔNG ném: trả ``{"payload", "error"}`` để process_task đặt
+    COMPLETED + CHAT_PENDING. None = chat xong hoặc không có gì để nhắn.
+    """
+    from shared.g2g_api import ChatError
+
     auth = await auth_manager.get_auth()
     qty = int(task_data.get("delivery_qty", "1"))
     raw_files = task_data.get("files", [])
-    message_path = Path("message.txt")
-    message = ""
-    if message_path.exists():
-        message = message_path.read_text(encoding="utf-8").strip() or "Done"
+    message = read_message()
 
     # Extract full order_item_id (with -1 suffix) from order_url
     api_id = _resolve_api_id(order_id, task_data.get("order_url", ""))
@@ -489,28 +502,53 @@ async def handle_g2g_api(order_id: str, task_data: dict):
             task_data["skip_steps"] = list(completed_steps)
             raise
 
-    # Step 3: Send chat (retry on auth error)
+    # Step 3: Send chat. Chỉ một lượt ở đây — KHÔNG thử lại ngay khi gặp lỗi
+    # auth: dịch vụ auth có thể vẫn cầm đúng JWT vừa chết, gọi G2G lại bằng nó
+    # làm G2G đá phiên đăng nhập. Lỗi → CHAT_PENDING, vòng hồi phục gửi lại sau
+    # ≥60s, khi đó đã có buyer_id/channel_url nên thường không cần gọi G2G nữa.
     if "chat" not in completed_steps and message:
-        chat_ok = False
-        for attempt in range(2):
-            try:
-                await api_client._send_chat(api_id, message, auth, auth.seller_id)
-                completed_steps.add("chat")
-                chat_ok = True
-                break
-            except Exception as e:
-                err_str = str(e)
-                if "401" in err_str or "auth error" in err_str.lower():
-                    logger.warning(f"[{order_id}] Chat auth error (attempt {attempt+1}), refreshing JWT")
-                    try:
-                        auth = await auth_manager.get_auth()
-                    except Exception:
-                        break
-                else:
-                    logger.warning(f"[{order_id}] Chat failed (non-fatal): {e}")
-                    break
-        if not chat_ok:
-            logger.warning(f"[{order_id}] Chat not sent after retries")
+        try:
+            await api_client._send_chat(api_id, message, auth, auth.seller_id)
+            completed_steps.add("chat")
+        except ChatError as e:
+            logger.warning(f"[{order_id}] Chat chưa gửi được, sẽ gửi lại sau: {e}")
+            return {"payload": {"api_id": api_id, "progress": e.progress},
+                    "error": str(e)}
+    return None
+
+
+async def _resend_g2g_chat(order: dict, payload: dict):
+    """Gửi lại lời nhắn cho một đơn CHAT_PENDING. Lỗi lấy auth thì ném ra để
+    vòng quét dừng (đơn nào cũng sẽ vấp cùng chỗ)."""
+    from shared.g2g_api import AuthError, ChatError
+
+    order_id = order["order_id"]
+    message = read_message()
+    if not message:
+        clear_chat_pending(db, order_id)
+        logger.info(f"[{order_id}] message.txt không có — bỏ lượt gửi lại chat")
+        return
+    api_id = payload.get("api_id") or _resolve_api_id(order_id, order.get("order_url") or "")
+    tries = int(payload.get("tries") or 1)
+    auth = await auth_manager.get_auth()
+    PROCESSING_TASKS.add(order_id)
+    try:
+        await api_client._send_chat(api_id, message, auth, auth.seller_id,
+                                    progress=payload.get("progress"))
+        clear_chat_pending(db, order_id)
+        logger.info(f"[{order_id}] Gửi lại chat OK (lượt {tries + 1})")
+    except ChatError as e:
+        payload = {**payload, "api_id": api_id, "progress": e.progress}
+        if mark_chat_pending(db, "g2g", order_id, payload, str(e), tries + 1):
+            logger.warning(f"[{order_id}] Gửi lại chat lỗi (lượt {tries + 1}): {e}")
+        else:
+            logger.error(f"[{order_id}] Bỏ gửi lại chat sau {tries + 1} lượt: {e}")
+        if isinstance(e.__cause__, AuthError):
+            # G2G vừa từ chối JWT. Đơn kế tiếp trong lượt quét sẽ lấy lại đúng
+            # JWT đó từ dịch vụ auth — gọi G2G lần nữa là có thể bị đá phiên.
+            raise RuntimeError("G2G từ chối JWT — dừng lượt quét chat") from e
+    finally:
+        PROCESSING_TASKS.discard(order_id)
 
 
 # ── G2G Delivery Logic ──
@@ -726,6 +764,17 @@ async def run_worker():
                     f"skip={task_data.get('skip_steps', [])})"
                 )
                 asyncio.create_task(process_task(task_data))
+
+            # Lời nhắn chờ gửi lại — tuần tự, không bắn dồn lên Sendbird/G2G.
+            # Lỗi ngoài ChatError (auth chưa sẵn sàng, DB) thì dừng lượt quét này;
+            # không để nó giết cả vòng hồi phục.
+            try:
+                for order, payload in due_chat_retries(db, "g2g"):
+                    if order["order_id"] in PROCESSING_TASKS:
+                        continue
+                    await _resend_g2g_chat(order, payload)
+            except Exception as e:
+                logger.info(f"Hoãn gửi lại chat tới lượt quét sau: {e}")
     asyncio.create_task(recover_pending_retries())
 
     await _shutdown_event.wait()

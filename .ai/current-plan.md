@@ -1,88 +1,78 @@
-# Plan — Eldorado auth: thêm chế độ Seller API (Bearer token) cạnh chế độ cookie
+# Plan — Chat G2G/Eldorado: vá các chỗ hở ở `docs/marketplace_chat.md` mục 6
 
-> Lập 2026-10-14. Chủ duyệt làm 14/10 ("hãy tiến hành cập nhật"). Bối cảnh, số đo và
-> lộ trình đầy đủ: `docs/seller_api_migration_plan.md` (plan này = Bước 1 + Bước 2 ở đó).
-> Plan cũ ở file này (G2G proof upload, Phase B đã commit `36dc4bb`) nằm trong git history.
+> Lập 2026-10-22. Chủ giao 22/10: "giải quyết các phần còn hở … lưu ý các bẫy tránh làm mất
+> phiên đăng nhập". Số đo làm căn cứ: `docs/marketplace_chat.md` mục 2.1, 2.3, 2.6 (đo 22/10).
+> Plan cũ ở file này (Seller API, `bf12ea7`) nằm trong git history.
 
 ## Goal
 
-Dịch vụ auth lấy được token Eldorado bằng Client ID + Client secret (Seller API, token
-sống 900s, không cần trình duyệt) và phát cho scanner/worker/status_sync qua
-`GET /auth/eldo`; client gắn `Authorization: Bearer`. Bật bằng `ELDO_AUTH_MODE=seller_api`
-trong `.env`. Mặc định vẫn là `cookie` — deploy bản này mà chưa đổi `.env` thì hành vi
-không đổi.
+1. G2G: kiểm phản hồi Sendbird; Session-Key thiếu/sai/thu hồi (mã 4003xx, 400401) → ném lỗi riêng
+   và bắn `OPS ALERT [g2g-sendbird-key]`.
+2. G2G: `POST chat/channel` lỗi (500/502/timeout/401) hoặc không trả `channel_url` → tìm kênh có sẵn
+   qua Sendbird `members_exactly_in` (chỉ Session-Key). Bỏ tên kênh tự dựng `g2g_dm_{buyer}_{seller}`
+   (sai 17/50 kênh).
+3. Logger `g2g.api`, `eldo.api` có handler (`setup_logger`) để dòng INFO vào log.
+4. Chat hỏng được gửi lại (cả hai sàn): đơn vẫn `COMPLETED` (hàng đã giao), gắn
+   `error_message = "CHAT_PENDING:…"` + `retry_data = {"chat": {...}}`; vòng hồi phục sẵn có của mỗi
+   worker gửi lại **riêng lời nhắn**, giãn 1 → 5 → 30 → 60 phút, tối đa 5 lượt rồi `CHAT_STUCK:` +
+   ops alert. Lần gửi lại G2G dùng lại `buyer_id`/`channel_url` đã biết, không gọi G2G nữa.
+5. Xoá `full_delivery` chết ở `shared/g2g_api.py` và `shared/eldo_api.py` (không ai gọi; bản Eldo gọi
+   hàm không tồn tại `send_text_message_rest`).
+6. Sửa tài liệu sai: `seller_api_migration_plan.md` bảng 2.3 ("lùi sang REST"), `proof_mechanism.md`
+   mục 3 (bằng chứng Eldorado "non-fatal" — cũ từ `533b305`).
 
 ## Allowed files
 
-- `shared/config.py` — 3 biến env mới
-- `auth/main.py` — `EldoAuth` (đường lấy token, `is_fresh`), `handle_health`, log khởi động
-- `shared/eldo_auth.py` — `EldoAuthData`, `build_headers`, `_fetch`
-- `.env.example` — tên biến, giá trị rỗng
-- `tests/test_eldo_seller_auth.py` — test cô lập với máy chủ Eldorado giả (mới)
-- `docs/marketplace_auth.md`, `docs/operations.md`, `docs/architecture.md`,
-  `docs/seller_api_migration_plan.md` — doc-sync
+- `shared/g2g_api.py`, `shared/eldo_api.py`
+- `shared/database.py` — chỉ thêm hàm đọc `get_orders_by_error_prefix`, KHÔNG đổi schema
+- `workers/base_worker.py` — helper `CHAT_PENDING` dùng chung
+- `workers/g2g_worker.py`, `workers/eldorado_worker.py`
+- `tests/test_marketplace_chat.py` (mới)
+- `docs/marketplace_chat.md`, `docs/proof_mechanism.md`, `docs/seller_api_migration_plan.md`,
+  `docs/architecture.md` (nếu cần) — doc-sync
 - `.ai/current-plan.md`, `.ai/task-log.md`
 
 ## Do not touch
 
-- Đường cookie hiện có của Eldorado (`_try_backend_refresh`, `_backend_refresh_with`,
-  capture Camoufox, guard chống mất cookie, xoay profile) — giữ nguyên từng dòng; nó là
-  đường lùi.
-- `shared/eldo_api.py` — KHÔNG đổi route trong plan này. Chuyển sang `/api/v1/orders/me/*`
-  là Bước 3 của lộ trình, làm sau khi thử trên đơn thật.
-- Mọi thứ của G2G; `scanners/`, `workers/`, `status_sync/`; payload ERP.
-- `.env` trên server, `chrome_profile_eldo*`, `data/orders.db`.
+- `auth/main.py`, `shared/g2g_auth.py`, `shared/eldo_auth.py` — mọi thứ liên quan phiên đăng nhập.
+- `.env` trên server, `chrome_profile_*`, hàng có sẵn trong `data/orders.db`.
+- `scanners/`, `status_sync/`, payload ERP, các bước qty/proof/deliver.
+- Hành vi `call_with_retry` của G2G: gặp `AuthError` thì invalidate và KHÔNG gọi lại ngay.
 
 ## Steps
 
-1. `shared/config.py`: `ELDO_AUTH_MODE` (`cookie` | `seller_api`), `ELDO_SELLER_CLIENT_ID`,
-   `ELDO_SELLER_CLIENT_SECRET`.
-2. `auth/main.py`:
-   - `_eldo_seller_token()` — `POST /api/authentication/seller/token` body JSON
-     `{clientId, clientSecret}`; `_eldo_seller_probe()` — `GET
-     /api/v1/orders/me/seller-api-eligibility` (route có trong Swagger);
-     `_eldo_seller_credential_expiry()` — đọc hạn credential (best-effort).
-   - `EldoAuth._capture_seller_api()` trả bundle `{auth_mode, bearer_token, expires_at,
-     user_agent, seller_id, logged_in, api_verified, cookies: {}, xsrf_token: ""}`.
-   - `EldoAuth.capture()`: ở chế độ `seller_api` thử token trước; **không lấy được thì
-     rơi xuống đường cookie cũ** và bắn ops alert (đơn là tiền thật — không để bot mù vì
-     một lần cổng token lỗi).
-   - `EldoAuth.is_fresh()`: bundle token còn mới khi token còn > 360s (client cache 300s
-     + 60s đệm), để client không bao giờ cầm token đã hết hạn.
-   - `handle_health`: thêm `auth_mode`, `bearer`, `bearer_expires_in`,
-     `seller_credential_expires_in`. Không bỏ trường cũ nào (dashboard đang đọc).
-3. `shared/eldo_auth.py`: `EldoAuthData.bearer_token/expires_at`; `build_headers` gắn
-   Bearer và bỏ Cookie/XSRF/nsure/build-time khi có token; `_fetch` không cache quá hạn token.
-4. `.env.example` + doc-sync.
-5. `py_compile` 3 file `.py`; `python tests/test_eldo_seller_auth.py` (44 phép kiểm, cần venv có
-   `requirements.txt`).
+1. `shared/g2g_api.py`: `SendbirdError`, `SendbirdKeyError`, `ChatError(progress)`; `_parse_sendbird`;
+   `send_chat_message` kiểm `message_id`; `find_chat_channel`; `create_chat_channel` trả `""` khi
+   thiếu; `_send_chat(progress=…)` (lỗi gì cũng gói thành `ChatError`, gồm `AuthError` — không thử
+   lại ngay); `setup_logger`; xoá `full_delivery`.
+2. `shared/eldo_api.py`: `setup_logger`; xoá `full_delivery`.
+3. `shared/database.py`: `get_orders_by_error_prefix(platform, status, prefix)`.
+4. `workers/base_worker.py`: `read_message`, `mark_chat_pending`, `due_chat_retries`,
+   `complete_order` (xoá dấu `CHAT_*` cũ khi đơn hoàn tất lại).
+5. `workers/g2g_worker.py`: bước chat bỏ vòng thử lại ngay sau lỗi auth (nguy cơ gọi G2G bằng JWT
+   chết → G2G đá phiên); lỗi → `CHAT_PENDING`; vòng `recover_pending_retries` quét thêm chat.
+6. `workers/eldorado_worker.py`: `handle_eldo_api` trả thêm lỗi chat; `CHAT_PENDING`; vòng
+   `recover_auth_failed` quét thêm chat.
+7. Test cô lập (Sendbird/G2G/TalkJS giả, DB tạm): `tests/test_marketplace_chat.py`.
+8. Doc-sync + `.ai/task-log.md`, commit, push `main`.
+9. Deploy CHỈ `worker_g2g worker_eldo` (xem Risks).
 
 ## Acceptance
 
-- `ELDO_AUTH_MODE` vắng hoặc `cookie`: `/auth/eldo` và `/health` trả đúng như trước
-  (chỉ thêm 4 trường mới trong `health.eldo`).
-- `ELDO_AUTH_MODE=seller_api` + credential đúng: `/auth/eldo` trả `bearer_token`,
-  `health.eldo.bearer=true`, không tiến trình Camoufox nào được mở, scanner đọc được đơn.
-- `ELDO_AUTH_MODE=seller_api` + credential sai/hết hạn: log `OPS ALERT [eldo-seller-api]`,
-  `/auth/eldo` vẫn trả bundle cookie (nếu còn phiên cookie).
-- Secret không xuất hiện trong log, trong response `/health`, hay trong git.
+- Test mới xanh; `tests/test_talkjs.py` vẫn xanh; `py_compile` mọi file sửa.
+- Sau deploy: hai worker lên, 1 PID mỗi cổng 8001/8002; `auth.main` giữ nguyên PID và uptime; đơn
+  G2G kế tiếp có dòng `Chat sent to buyer` trong `/tmp/g2g_worker.log`.
 
 ## Risks
 
-- **Chưa thử được bằng token** (phải thử trên một đơn Paid thật sau khi bật):
-  `GET v1/orders/me/{id}/delivery-details/{detailId}`, `PUT orders/me/{id}/deliver`, gửi
-  bằng chứng qua TalkJS. Nếu một trong ba bị từ chối → đặt lại `ELDO_AUTH_MODE=cookie`,
-  restart auth.
-- Rơi xuống cookie là tự động và có alert, nên trong giai đoạn chuyển phải giữ ≥1 profile
-  cookie còn sống (bak1 hết 04/11/2026).
-- Lộ `ELDO_SELLER_CLIENT_SECRET` = mất quyền điều khiển offer và đơn. Chỉ nằm trong
-  `/opt/BotPasteDon/.env` trên .220, quyền 600.
-- `auth/main.py` là vùng nhạy (AGENTS.md) — cần review trước khi merge.
-
-## Deploy + verify
-
-1. Chủ thêm 3 dòng vào `/opt/BotPasteDon/.env` trên .220 (xem `docs/operations.md`).
-2. `git commit` → `git push origin main` → `python scripts/deploy_git.py auth` (dịch vụ
-   auth), rồi scanner/worker/status_sync Eldorado để nạp `shared/eldo_auth.py` mới.
-3. `curl -s localhost:8010/health` → `eldo.auth_mode == "seller_api"`, `eldo.bearer == true`.
-4. Theo dõi một đơn Paid thật đi trọn vòng.
+- **Mất phiên đăng nhập** — chỉ xảy ra nếu `auth.main` bị restart (G2G: token xoay chỉ trong RAM;
+  Eldorado: đường lùi cookie chỉ còn `bak1`). Plan không restart auth. Bẫy: `deploy_git.py` chạy
+  `systemctl stop bot-watchdog.service`, giết mọi tiến trình trong cgroup watchdog — nếu `auth.main`
+  từng được watchdog dựng lại thì nó nằm trong cgroup đó và chết theo. **Kiểm cgroup trước**; auth
+  nằm trong đó thì KHÔNG dùng `deploy_git.py`.
+- Restart worker giữa lúc đang giao → đơn kẹt `DELIVERING`. Deploy lúc không có task đang chạy (dòng
+  `Processing:`/`Task received` cuối cùng đã có `Completed:` tương ứng).
+- Gửi lại chat có thể trùng tin nếu Sendbird/TalkJS đã nhận nhưng trả lời bị mất (timeout). Chấp nhận:
+  thừa một lời cảm ơn tốt hơn thiếu.
+- Scanner/status_sync cũng import `g2g_api`/`eldo_api` nhưng KHÔNG restart lần này; đổi logger có hiệu
+  lực với chúng ở lần restart sau.

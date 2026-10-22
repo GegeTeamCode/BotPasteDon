@@ -78,16 +78,17 @@ BotPasteDon la he thong multi-process tu dong hoa quy trinh quat don va giao han
 - **API mode**: `deliver_order` → `send_attachment` (proof = đính kèm thật, Firebase + TalkJS `/say/`) → `send_message` (TalkJS WebSocket)
 - **Selenium mode**: Click "Delivered" → upload proof qua TalkJS iframe → chat qua WS/REST
 - Per-step delivery voi `skip_steps` tracking trong DB `retry_data`
-- Recovery loop: 60s, check orders stuck in DELIVERING, retry tu step failed
+- Recovery loop 60s (`recover_auth_failed`): don `FAILED` co `AUTH_EXPIRED:` / `PROOF_PENDING:`, va don `COMPLETED` co `CHAT_PENDING:` (chi gui lai loi nhan)
 
 **`workers/g2g_worker.py`** — HTTP API (aiohttp, port 8002).
-- **API mode**: `submit_qty` → `upload_proof` (S3 presigned) → `create_sendbird_channel` → `send_chat`
+- **API mode**: `submit_qty` → `upload_proof` (S3 presigned) → kenh chat (`POST chat/channel`, loi thi tim kenh co san qua Sendbird `members_exactly_in`) → `send_chat` (Sendbird, chi can Session-Key)
 - **Selenium mode**: Fill qty → upload gallery → inject ProseMirror → send
-- JWT-expired recovery: check `error_message.startswith("JWT_EXPIRED:")`, retry khi co JWT moi
+- Recovery loop 60s (`recover_pending_retries`): don `RETRY_PENDING` toi han (+ `JWT_EXPIRED:` cu), va don `COMPLETED` co `CHAT_PENDING:`
+- Chat hong khong lam hong don: don van `COMPLETED`, `error_message=CHAT_PENDING:…`, `retry_data={"chat": …}`; gui lai gian 1/5/30/60 phut, 5 luot roi `CHAT_STUCK:` + ops alert. Chi tiet: [marketplace_chat.md](marketplace_chat.md)
 
 **`workers/talkjs_client.py`** — TalkJS client. Text đi qua realtime WebSocket; đính kèm đi qua backend cũ `POST /say/{convId}/` (realtime API đòi `fileToken` mà JWT người dùng không xin được). `talkjs_internal_id()` = SHA-1 rút gọn 10 byte. Chi tiết: `docs/proof_mechanism.md` mục 3.
 
-**`workers/base_worker.py`** — Shared utilities: implicit-wait override, filename sanitizing, file cleanup.
+**`workers/base_worker.py`** — Shared utilities: implicit-wait override, filename sanitizing, file cleanup, `read_message()` (`message.txt`), so sach `CHAT_PENDING` dung chung hai worker (`mark_chat_pending`, `due_chat_retries`, `complete_order`).
 
 ### status_sync/
 

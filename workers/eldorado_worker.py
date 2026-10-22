@@ -29,6 +29,7 @@ from shared.driver_manager import get_driver
 from shared.logging_config import setup_logger
 from workers.base_worker import (
     cleanup_files, implicit_wait_override, sanitize_filename, _executor,
+    read_message, mark_chat_pending, due_chat_retries, clear_chat_pending, complete_order,
 )
 from workers.talkjs_client import TalkJSClient
 
@@ -118,9 +119,13 @@ async def process_task(task_data: dict):
             db.update_order_status(order_id, ORDER_DELIVERED)
             logger.info(f"Delivered (fast, proof pending): {order_id}")
         elif ELDO_USE_API and api_client and auth_manager:
-            proofs_ok = await handle_eldo_api(order_id, task_data)
+            proofs_ok, chat_error = await handle_eldo_api(order_id, task_data)
             if proofs_ok:
-                db.update_order_status(order_id, ORDER_COMPLETED)
+                if chat_error:
+                    # Đã giao + bằng chứng đã lên — chỉ lời nhắn chờ gửi lại.
+                    mark_chat_pending(db, "eldorado", order_id, {}, chat_error)
+                else:
+                    complete_order(db, order_id)
                 cleanup_files(task_data.get("files", []))
                 logger.info(f"Completed: {order_id}")
             else:
@@ -323,15 +328,15 @@ async def _talkjs_send_attachment_with_retry(order_id: str, conv_id: str,
     return None
 
 
-async def handle_eldo_api(order_id: str, task_data: dict) -> bool:
-    """Delivery via API — per-step with progress tracking."""
-    from shared.eldo_api import AuthError
+async def handle_eldo_api(order_id: str, task_data: dict) -> tuple:
+    """Delivery via API — per-step with progress tracking.
 
+    Trả ``(proofs_ok, chat_error)``: ``chat_error`` là None khi lời nhắn đã gửi
+    (hoặc không có gì để nhắn), ngược lại là lý do để đặt CHAT_PENDING.
+    """
     auth = await auth_manager.get_auth()
-    message = ""
-    message_path = Path("message.txt")
-    if message_path.exists():
-        message = message_path.read_text(encoding="utf-8").strip() or "Done"
+    message = read_message()
+    chat_error = None
 
     skip_steps = set(task_data.get("skip_steps", []))
     completed_steps = set(skip_steps)
@@ -426,6 +431,7 @@ async def handle_eldo_api(order_id: str, task_data: dict) -> bool:
                         completed_steps.add("chat")
                         logger.info(f"[{order_id}] Chat sent")
                     else:
+                        chat_error = "TalkJS không nhận lời nhắn sau 3 lần thử"
                         logger.warning(f"[{order_id}] Chat send failed after retry")
                 else:
                     # message.txt trống/thiếu → không có gì để nhắn. Trước đây
@@ -434,17 +440,55 @@ async def handle_eldo_api(order_id: str, task_data: dict) -> bool:
                     completed_steps.add("chat")
                     logger.info(f"[{order_id}] Không có lời nhắn — bỏ qua bước chat")
             else:
+                chat_error = "đơn không có talkJsConversationId"
                 logger.info(f"[{order_id}] No TalkJS conversation ID")
         except Exception as e:
+            chat_error = f"{type(e).__name__}: {str(e)[:250]}"
             logger.warning(f"[{order_id}] Chat failed (non-fatal): {e}")
 
     # Bằng chứng là cam kết với người mua nên nó quyết định đơn có xong hay
     # chưa. Trả về cho process_task thay vì nuốt cảnh báo như trước.
     proofs_ok = bool("proofs" in completed_steps or not files)
     if not proofs_ok:
-        # Giao hàng và chat đã xong — lần gửi lại chỉ làm bước proof.
+        # Giao hàng đã xong — lần gửi lại làm bước proof (và chat nếu chưa xong).
         task_data["skip_steps"] = [s for s in completed_steps if s != "proofs"]
-    return proofs_ok
+    return proofs_ok, chat_error
+
+
+async def _resend_eldo_chat(order: dict, payload: dict):
+    """Gửi lại lời nhắn cho một đơn CHAT_PENDING. Lỗi lấy auth thì ném ra để
+    vòng quét dừng."""
+    order_id = order["order_id"]
+    message = read_message()
+    if not message or not talkjs_client:
+        clear_chat_pending(db, order_id)
+        logger.info(f"[{order_id}] Không có lời nhắn — bỏ lượt gửi lại chat")
+        return
+    tries = int(payload.get("tries") or 1)
+    auth = await auth_manager.get_auth()
+    PROCESSING_TASKS.add(order_id)
+    try:
+        error = ""
+        try:
+            detail = await api_client.call_with_retry(
+                api_client.get_order_detail, order_id, auth)
+            conv_id = detail.get("talkJsConversationId", "")
+            if not conv_id:
+                error = "đơn không có talkJsConversationId"
+            elif await _talkjs_send_with_retry(order_id, conv_id, message, auth):
+                clear_chat_pending(db, order_id)
+                logger.info(f"[{order_id}] Gửi lại chat OK (lượt {tries + 1})")
+                return
+            else:
+                error = "TalkJS không nhận lời nhắn sau 3 lần thử"
+        except Exception as e:
+            error = f"{type(e).__name__}: {str(e)[:250]}"
+        if mark_chat_pending(db, "eldorado", order_id, payload, error, tries + 1):
+            logger.warning(f"[{order_id}] Gửi lại chat lỗi (lượt {tries + 1}): {error}")
+        else:
+            logger.error(f"[{order_id}] Bỏ gửi lại chat sau {tries + 1} lượt: {error}")
+    finally:
+        PROCESSING_TASKS.discard(order_id)
 
 
 # ── Eldorado Fast Delivery (Selenium) ──
@@ -748,6 +792,16 @@ async def run_worker():
                     }
 
                 asyncio.create_task(process_task(task_data))
+
+            # Lời nhắn chờ gửi lại — tuần tự. Lỗi ngoài luồng chat (auth chưa
+            # sẵn sàng, DB) thì dừng lượt quét, không giết vòng hồi phục.
+            try:
+                for order, payload in due_chat_retries(db, "eldorado"):
+                    if order["order_id"] in PROCESSING_TASKS:
+                        continue
+                    await _resend_eldo_chat(order, payload)
+            except Exception as e:
+                logger.info(f"Hoãn gửi lại chat tới lượt quét sau: {e}")
     asyncio.create_task(recover_auth_failed())
 
     await _shutdown_event.wait()

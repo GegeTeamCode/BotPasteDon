@@ -108,7 +108,7 @@ Kiểm 15/10 01:10: đơn mới nhất trên Eldorado cũng là đơn đó, nên
 | Mở phiên chat | WebSocket `realtime.talkjs.com` + `/session/renew` bằng token TalkJS | 15/10: thành công (mở rồi đóng, không gửi gì) |
 | Tải file bằng chứng | Firebase Storage của TalkJS | không dùng auth Eldorado |
 | Gửi đính kèm | `POST app.talkjs.com/api/v0/say/{conversationId}/` bằng token TalkJS | không dùng auth Eldorado; chưa gửi thật |
-| Gửi lời nhắn | WebSocket TalkJS (lùi sang REST), nội dung lấy từ `message.txt` | không dùng auth Eldorado; chưa gửi thật |
+| Gửi lời nhắn | WebSocket TalkJS (thử 3 lần, mỗi lần hỏng thì xin token TalkJS mới; không có đường REST), nội dung lấy từ `message.txt` | không dùng auth Eldorado; chạy thật 15/10 |
 
 Task `fast_delivery` chỉ làm bước "Bấm delivered". Như vậy lệnh duy nhất còn phụ thuộc token mà
 chưa thử là `deliver`. Nó nằm trong Swagger nên khả năng bị từ chối thấp. Nếu bị 401/403, worker

@@ -187,6 +187,22 @@ class Database:
             finally:
                 conn.close()
 
+    def get_orders_by_error_prefix(self, platform: str, status: str,
+                                   prefix: str) -> List[Dict]:
+        """Orders in `status` whose error_message starts with `prefix` (exact,
+        case-sensitive — not LIKE, where '_' would be a wildcard)."""
+        with self._lock:
+            conn = self._get_conn()
+            try:
+                rows = conn.execute(
+                    "SELECT * FROM orders WHERE platform = ? AND status = ? "
+                    "AND substr(error_message, 1, ?) = ?",
+                    (platform, status, len(prefix), prefix),
+                ).fetchall()
+                return [dict(r) for r in rows]
+            finally:
+                conn.close()
+
     def is_order_in_status(self, order_id: str, status: str) -> bool:
         with self._lock:
             conn = self._get_conn()

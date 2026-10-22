@@ -10,7 +10,8 @@
 - **G2G**: proof là **delivery_proof CHÍNH THỨC** trên marketplace (upload S3 presigned).
   **Bắt buộc** — thiếu proof thì đơn terminal, không complete.
 - **Eldorado**: proof gửi **qua chat TalkJS/Firebase** (không có delivery_proof chính thức).
-  **Non-fatal** — fail thì gửi link text, đơn vẫn complete.
+  Từ `533b305` proof fail thì đơn `FAILED` + `PROOF_PENDING:`, tự gửi lại tối đa 5 lượt rồi
+  `PROOF_STUCK:` (gửi tay từ ERP). Không còn nhánh dán link text.
 - Cả 2 worker dùng chung pattern `cleanup_files()` lỗi → **file `/tmp` tải về không bao giờ
   bị dọn** (rò rỉ #8).
 
@@ -113,7 +114,11 @@ tải `https://app.talkjs.com/app/{appId}/user/0/inbox/chats` rồi đọc thẻ
 backend bắt đầu từ chối, cập nhật hằng này.
 
 ### Đặc điểm
-- **Non-fatal**: cả bước proof bọc `try/except → warning`, đơn **vẫn complete** dù proof fail.
+- **Bằng chứng quyết định đơn xong hay chưa** (từ `533b305`, 26/09): `handle_eldo_api` trả
+  `proofs_ok`; thiếu file nào thì đơn `FAILED` với `PROOF_PENDING:` và `retry_data` chỉ còn bước
+  proof (và chat nếu chưa gửi). `recover_auth_failed` gửi lại mỗi 60s, tối đa 5 lượt, sau đó
+  `PROOF_STUCK:` để người gửi tay bằng "Đã giao" trên ERP. Mỗi file thử 3 lần trong một lượt, gặp
+  401 thì xin lại token TalkJS.
 - `_download_file`: `str` → trả luôn; `dict` (ERP) → tải `/tmp/erp_evidence_*`.
   Tên tạm vô nghĩa nên phải truyền `display_name` = `fp["name"]` để người mua
   thấy tên file thật.
@@ -129,7 +134,7 @@ backend bắt đầu từ chối, cập nhật hằng này.
 |---|---|---|
 | Đích upload | G2G S3 (presigned POST) | Firebase Storage của TalkJS |
 | Gắn vào | `delivery_proof` chính thức của order | đính kèm thật trong chat TalkJS |
-| Bắt buộc? | **CÓ** — thiếu proof → terminal, không complete | **KHÔNG** — fail thì bỏ qua, vẫn complete |
+| Bắt buộc? | **CÓ** — thiếu proof → terminal, không complete | **CÓ** (từ 26/09) — thiếu proof → `PROOF_PENDING`, tự gửi lại 5 lượt rồi `PROOF_STUCK` |
 | Lọc ext ở bot | jpg/jpeg/png/gif/mp4/mov | không (đẩy thẳng Firebase) |
 | Fallback | Selenium "Proof gallery" | không có — proof fail thì bỏ qua |
 | Thứ tự bước | qty → proof → chat | deliver → proofs → chat |
