@@ -22,9 +22,33 @@ logger = setup_logger("scanner.eldo.api")
 # can't resolve it (order lands with NULL game_context). Map the Eldorado gameId to
 # the canonical ERP Game Title here. Keyed by str(gameId).
 #   225 -> library title "Flame Elementium" (the currency), ERP game is "Torchlight: Infinite".
+#   360 -> gameId 360 has Accounts, Kinah and Custom Request; the library dict keeps
+#          the LAST one, so Aion 2 orders arrived as "Custom Request" (2026-10-23).
 ELDO_GAME_ID_TITLES = {
     "225": "Torchlight: Infinite",
+    "360": "Aion 2",
 }
+
+# Games whose server is a multi-level trade environment (Region -> Faction -> Server).
+# The first level alone ("Europe") loses the server, so send the label G2G orders
+# carry for the same server ("Zikel - Asmodian [EU]") as both `server` and
+# `itemName` — ERP then gets one shape from both marketplaces.
+ELDO_SERVER_LABEL_GAMES = {"360"}
+ELDO_REGION_LABELS = {"Europe": "EU"}   # Eldorado region -> G2G label
+
+# (gameId, category) counted in MILLIONS on ERP, like Gold: Aion 2 Kinah is sold
+# per 1M ("Mil Kinah" on G2G, unitSystem Unit1000000 on Eldorado).
+ELDO_MILLION_UNIT = {("360", "Currency")}
+
+
+def _eldo_server_label(trade_env: list) -> Optional[str]:
+    """'Server - Faction [Region]' from a Region/Faction/Server trade environment."""
+    by_level = {(te.get("name") or "").strip().lower(): (te.get("value") or "").strip()
+                for te in trade_env}
+    region, faction, server = by_level.get("region"), by_level.get("faction"), by_level.get("server")
+    if not (region and faction and server):
+        return None
+    return f"{server} - {faction} [{ELDO_REGION_LABELS.get(region, region)}]"
 
 
 class EldoradoAPIScanner:
@@ -156,6 +180,10 @@ class EldoradoAPIScanner:
             if val:
                 server = val
                 break
+        if str(offer.get("gameId", "")) in ELDO_SERVER_LABEL_GAMES:
+            label = _eldo_server_label(trade_env)
+            if label:
+                server = item_name = label
 
         # Game name — prefer attributeId, then heuristic, then game library
         game = "N/A"
@@ -231,6 +259,7 @@ class EldoradoAPIScanner:
         except (TypeError, ValueError):
             _ppu = 0.0
         _is_gold = (offer.get("gameCategoryTitle") or "").strip().lower() == "gold"
+        _is_gold = _is_gold or (str(offer.get("gameId", "")), offer.get("category")) in ELDO_MILLION_UNIT
         if _is_gold:
             _erp_base = 1_000_000  # ERP Gold unit = 1 million
             _qty_num = _pq * _unit_val / _erp_base

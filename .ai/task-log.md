@@ -5,6 +5,28 @@ mới nhất ở trên cùng.
 
 ---
 
+## 2026-10-23
+
+- `fix(eldo): don Aion 2 Kinah vao ERP dung khuon don G2G` — `scanners/eldorado_scanner_api.py`.
+  - Don Eldorado Aion 2 dau tien `A11F9438…` vao .100 thanh `SO-261023-R1CG2IBY`: game "Custom Request"
+    (muc cuoi cua gameId 360 trong `/library`) → `game_context` NULL, server "Europe", itemName "Kinah",
+    10.000.000 × 0,000001. Seller da huy tren Eldorado (Out_Of_Stock), ERP Cancelled theo sync → khong don.
+  - Sua: `ELDO_GAME_ID_TITLES["360"]="Aion 2"`; game env nhieu cap (`ELDO_SERVER_LABEL_GAMES`) gui nhan
+    giong G2G "Zikel - Asmodian [EU]" o ca `server` lan `itemName`; (360, Currency) dem theo 1M nhu Gold.
+  - Verify: so `_map_order_data` cu/moi tren 15 don Eldorado that lay qua `get_order_detail` (.220, chi GET):
+    13/13 don game khac khong lech; don Aion 2 ra `Aion 2` / `Zikel - Asmodian [EU]` / 10 × 0,76699, tong
+    va earning giu nguyen. `tests/test_eldo_order_map.py` 5 ca xanh (venv .220, thu muc tam).
+  - Doc-sync: `docs/marketplace_offers.md` muc 2.10.
+- `docs: tai lieu dieu tra + tao offer currency Eldorado/G2G` (chi tai lieu, khong doi ma bot).
+  - `docs/marketplace_offers.md`: route cau truc game Eldorado (`library/{gameId}/{category}`, khong co trong
+    Swagger), board, `/me`, `POST predefinedOffers` + ba rao (upsert ghi de, `ElBudget`, cam route hang loat),
+    luat gia hang N, do lai, het han; phan G2G (dieu tra cong khai, dap gia, don ve ERP).
+  - Ghi ro rui ro map don Eldorado game moi trong `scanners/eldorado_scanner_api.py` (game theo `/library`
+    ra "Custom Request" voi gameId 360, server = cap env dau, qty x unit) — CHUA sua ma.
+  - Bo trong cach tao offer currency G2G: offer Kinah G2G tao theo lo 10/10 + 13/10 ngoai Claude, chua ai ghi.
+  - `docs/refs/eldorado_currency_offers/`: ban sao script da chay tren `.199` (md5 khop), chi chay o `.199`.
+  - Nguon: dot tao 104 offer Aion 2 Kinah tren Eldorado 22–23/10/2026 tu `.199` (104 POST 201, 0 lan 429).
+
 ## 2026-10-22
 
 - `fix(chat): kiem phan hoi Sendbird, kenh du phong, gui lai loi nhan CHAT_PENDING`
