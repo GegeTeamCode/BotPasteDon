@@ -25,6 +25,12 @@ mới nhất ở trên cùng.
     `docs/seller_api_migration_plan.md` (bang 2.3: khong co duong REST cho loi nhan).
   - Kiem truoc do (22/10, GET chi doc len Sendbird tu .220): chat G2G chi can Session-Key; khoa tu
     20/05/2026 van song; 20/20 don Completed gan nhat co the don + loi nhan tren Sendbird.
+- Deploy `9c61063` 11:36 — `deploy_git.py worker_g2g worker_eldo`, KHONG restart auth.
+  - Kiem truoc: cgroup `bot-watchdog.service` chi co `watchdog.py` (auth nam trong `botpaste.service`
+    nen stop watchdog khong giet auth); auth uptime 190h; hai worker ranh.
+  - Kiem sau: `auth.main` giu PID 423; moi cong 1 PID; status_sync song. 11:36→13:01: G2G 17 don
+    `Completed`, 17 dong `Chat sent to buyer`, 0 `CHAT_PENDING`, 0 OPS ALERT. Eldorado chua co don
+    nao tu luc deploy — duong `CHAT_PENDING` Eldorado moi chay trong test.
 
 ## 2026-09-15
 
