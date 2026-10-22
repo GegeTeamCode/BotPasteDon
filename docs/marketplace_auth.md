@@ -4,6 +4,8 @@ Tài liệu này document co che authentication cua hai marketplace **Eldorado.g
 
 Hai marketplace dung **kien truc khac nhau** (Cognito broker vs self-issued JWT) nhung cung pattern: short-lived access token + long-lived refresh token. Bot dung cung **two-tier strategy** — backend refresh nhanh, browser fallback cham.
 
+**Tu 2026-10-14, Eldorado chay bang Seller API** (client credentials → Bearer token, khong browser). Duong cookie mo ta duoi day chi con la duong lui. Tham chieu day du cua Seller API: muc [Eldorado Seller API — tham chiếu](#eldorado-seller-api--tham-chiếu). Token rieng cho chat (TalkJS, Sendbird): [marketplace_chat.md](marketplace_chat.md).
+
 **Consumers cua auth service**: workers (`workers/g2g_worker.py`, `workers/eldorado_worker.py`) khi giao hang; scanners (`scanners/{g2g,eldorado}_scanner_api.py`) khi poll pending orders; **status_sync** (`status_sync/{g2g,eldo}_sync.py`) khi poll counts + state lists moi 30 phut. Tat ca consume qua `shared/{g2g,eldo}_auth.py` (5-min cache, auto-invalidate khi 401).
 
 ---
@@ -120,6 +122,154 @@ chi hien 1 lan). Bot doi cap do lay Bearer token — khong browser, khong cookie
 ngoai Swagger (`orders/me/{id}`, `orders/me/statesCount`, `conversations/me/authorize`, `users/me`,
 `library`) — hien van chay bang token nhung Eldorado khong cam ket giu. Bang day du:
 [seller_api_migration_plan.md](seller_api_migration_plan.md) muc 2.2.
+
+---
+
+## Eldorado Seller API — tham chiếu
+
+Mục này gom mọi điều đã biết về Seller API chính thức của Eldorado (ra đầu tháng 10/2026), để không
+phải dò lại. Cách bot dùng nó nằm ở mục "Seller API mode" ngay trên; kế hoạch chuyển đổi và bảng route
+bot gọi nằm ở [seller_api_migration_plan.md](seller_api_migration_plan.md). Số đo ghi kèm ngày đo.
+
+### Nguồn
+
+| Nguồn | Ở đâu |
+|---|---|
+| Đặc tả Swagger (OpenAPI 3.0.1, 131 path, 141 thao tác, 162 schema, bản lấy 11/10/2026) | repo bot đạp giá `GegeTeamCode/BotDapLowestPoE`, file `docs/eldorado-seller-api/swagger.json` (commit `68f0b03`); trên workstation: `/mnt/Data/Project/BotDapGia/G2G-AutomationBot-v4/docs/eldorado-seller-api/` |
+| Số đo quota ghi 11/10/2026 | cùng thư mục, `do-quota-20261011.txt` |
+| Swagger UI | `https://www.eldorado.gg/swagger/seller/index.html` — chỉ mở được bằng trình duyệt đã đăng nhập seller; ẩn danh và token Bearer đều 403. Muốn bản mới thì chủ lưu JSON từ trình duyệt, ghi đè file trên rồi commit riêng file đó, so diff để biết route nào đổi |
+| Trang tạo credential | `https://www.eldorado.gg/dashboard/seller-api` |
+| Bài hướng dẫn | `https://support.eldorado.gg/en/articles/16127288-how-the-seller-api-works` |
+| Hỗ trợ | `api@eldorado.gg` — chỉ gửi Client ID, không bao giờ gửi secret |
+| Tài liệu cũ | `GET /api/v1/orders/me/seller-api-docs` trả trang tài liệu 06/2025 (đăng nhập Cognito bằng email + mật khẩu rồi gửi cookie `__Host-EldoradoIdToken`). Trang này ghi rõ "no webhook registration is available" |
+
+### Credential
+
+- Mỗi tài khoản có tối đa **2 credential đang hoạt động**. Tên chỉ gồm `[A-Za-z0-9_-]`. Hạn chọn 1, 14,
+  30, 90 hoặc 365 ngày. Secret hiện **một lần** lúc tạo.
+- **Hiện dùng một credential hạn 365 ngày**, chủ tạo 14/10/2026, hết khoảng 14/10/2027. Ba bot dùng
+  chung nó: BotPasteDon `.220`, bot đạp giá (control `.199`), item bot `.221`; mỗi bot tự xin token
+  (kiểm 15/10: vết băm id/secret trên ba máy giống nhau, cả ba xin token HTTP 200). Một credential cấp
+  nhiều token dùng song song được (đo 11/10: hai token xin cách nhau 1 giây cùng gọi 200).
+- **Xoay credential** phải sửa `.env` của **cả ba bot**, không chỉ `.220`: tạo credential thứ hai →
+  sửa `.env` từng bot → restart phần auth của từng bot → kiểm → rồi mới Revoke cái cũ. Cách làm trên
+  `.220`: [operations.md](operations.md) mục "Eldorado Auth — Seller API mode".
+- `GET /api/client-credentials` (ngoài Swagger, nhận Bearer) liệt kê credential kèm `expirationDate`;
+  auth `.220` đọc nó 6 giờ một lần để cảnh báo `eldo-seller-cred-expiring` khi còn dưới 14 ngày.
+  **Chưa ai thử POST/DELETE route này bằng token** — đừng thử khi chưa hỏi chủ.
+
+### Gọi API
+
+- Lấy token và hình dạng token: bảng ở mục "Seller API mode" (POST `.../authentication/seller/token`,
+  JWT RS256 sống 900 giây, không có refresh token).
+- Chỉ cần header `Authorization: Bearer <token>`. Header `swagger` mà đặc tả ghi là bắt buộc (mặc
+  định `Swager request`) chỉ dành cho Swagger UI; gọi thật không cần.
+- Luôn gọi `https://www.eldorado.gg`. Tên miền trần trả 301 và nhiều thư viện đổi POST thành GET.
+- **Token không bị giới hạn trong các route của Swagger.** Các route web vẫn trả 200 với Bearer:
+  `orders/me/{id}`, `orders/me/statesCount`, `users/me` (có email), `client-credentials`,
+  `predefinedOffersUser/me/stateCount`, `library`, `conversations/me/authorize`. Dùng route ngoài
+  Swagger là tự chịu rủi ro bị khoá không báo trước.
+- Mẹo dò route mà không đổi gì: GET vào một route vốn là PUT/POST → 405 kèm header `Allow` nghĩa là
+  route có tồn tại; 404 là không có.
+
+### Nhóm route trong Swagger (bản 11/10/2026, tiền tố `/api`)
+
+| Nhóm (tag Swagger) | Tiền tố route | Số thao tác |
+|---|---|---|
+| Đơn hàng — bản hiện hành (`UserOrderSellerPrivate`) | `v1/orders/me/*` | 11 |
+| Đơn hàng — bản cũ, cả 10 route đánh dấu `deprecated` (`UserOrderSellerPrivateObsolete`) | `orders/me/*` | 10 |
+| Currency — họ cũ (`PredefinedOffer*`) | `predefinedOffers`, `predefinedOffersUser/me` | 20 |
+| Currency — họ mới (`CurrencyOffer*`) | `v1/currency-management/me/offers`, `v1/currency-management/offers/groups` | 20 |
+| Item (`ItemOffer*`) | `v1/item-management/me/offers`, `v1/item-management/offers` | 15 |
+| Item — liên kết tài khoản Roblox giao tự động | `v1/item-management/me/roblox-accounts` | 8 |
+| Account (`FlexibleOffer*`) — gồm `secretDetails` là thông tin tài khoản giao khách | `flexibleOffers`, `flexibleOffersUser/me` | 19 |
+| Boosting | `boostingOffers` | 11 |
+| Swap — offer mua | `v1/swap-management/me/buy-offers`, `v1/swap-management/offers` | 13 |
+| Trạng thái seller (`OfferUserPrivate`) | `offerUser/me/switchOnline\|switchOffline\|restrictions\|bulkUploadCsv\|csvUploadExample` | 5 |
+| Thông báo | `notifications/me`, `unread-count`, `markAsRead`, `markAllAsRead` | 5 |
+| Dữ liệu công khai (`OfferPublic`) | `offers/osrsPrices`, `offers/rs3Prices`, `offers/productFeed`, `offers/productFeed.xml` | 4 |
+
+Tổng 141. Route chi tiết của các nhóm offer: tài liệu của bot đạp giá
+(`docs/eldorado-seller-api/plan.md` trong repo đó) hoặc mở thẳng `swagger.json`.
+
+### Route đơn hàng `v1/orders/me` (BotPasteDon quan tâm)
+
+| Route | Ghi chú (từ Swagger 11/10 và đo thật) |
+|---|---|
+| `GET seller/orders` | Bắt buộc `displayFilter=DisplaySellingOrders`. `orderState` ∈ `Paid`, `Disputed`, `Delivered`, `Received`, `Completed`, `Canceled`, `PendingReview` (giá trị cũ `PendingDelivery` bị bỏ từ 13/08/2026, gửi lên trả 400). `pageSize` 1–50. Phân trang cursor: `cursorValue`, `cursorColumn`, `pageDirection` (`Next`/`Previous`). Lọc thêm: `query`, `gameId`, `category`, `filterByActiveWarranty`, `orderGroup` (`Regular`/`Historical`), `isAscendingDateOrder`, `ignorePendingReviewOrders`. Bản cũ `orders/me/seller/orders` nhận cùng bộ tham số, đều 200 bằng token |
+| `PUT {orderId}/deliver` | Không body. Chú ý: trang dashboard của Eldorado in ví dụ `PUT /api/orders/me/{orderId}/delivered` — route đó **404**. Bot đang dùng bản cũ `PUT orders/me/{id}/deliver`, chạy thật bằng token 15/10 |
+| `POST {orderId}/cancel` | Body `{reason, message}`; `reason` là enum 16 giá trị (`Out_Of_Stock`, `Buyer_Did_Not_Respond`, `Seller_Going_Offline`, `Mutual_Agreement`, `Other`, …). Bot chưa dùng |
+| `POST {orderId}/extend-delivery-time` | Bot chưa dùng |
+| `POST {orderId}/delivery-details/correction` | Bot chưa dùng |
+| `GET order-data`, `GET sold-order-data` | CSV theo `fromDate`, `untilDate`; bản sold có cột `Amount $`, `Seller Fees $`, `Net Income $` |
+| `GET invoice/generate` | theo `fromDate`, `untilDate` |
+| `GET pending-review-order-count` | |
+| `GET seller-api-eligibility` | auth `.220` dùng làm probe kiểm token (route nằm trong Swagger nên ít bị khoá) |
+| `GET seller-api-docs` | trang tài liệu cũ, xem bảng Nguồn |
+
+Những gì bot cần mà **Swagger không có**, hiện đi bằng route web (bảng đầy đủ ở
+[seller_api_migration_plan.md](seller_api_migration_plan.md) mục 2.2):
+
+- Xem một đơn theo id (`orders/me/{id}`), đếm đơn theo trạng thái (`orders/me/statesCount`; khoá trả về
+  là `paid`, không phải `pendingDelivery` — đo 14/10).
+- Thông tin giao hàng khách nhập: từ 19/08/2026 không còn nằm sẵn trong đơn, phải đọc từng mục qua
+  `GET v1/orders/me/{id}/delivery-details/{detailId}`.
+- **Chat**: Swagger chỉ có `POST boostingOffers/boostingRequests/{id}/createConversationForSeller`.
+  Bot lấy token TalkJS qua `GET conversations/me/authorize` rồi nói chuyện thẳng với TalkJS — xem
+  [marketplace_chat.md](marketplace_chat.md).
+- Upload ảnh offer (`files/me/Offer`), số dư/rút tiền, tranh chấp, webhook: không có. Đặc tả không có
+  chữ nào về rate limit, quota hay 429.
+
+### Giới hạn
+
+**Đọc (GET)** — đo 14/10/2026 08:27–08:54 từ workstation, 3.430 lượt (2.314 lượt 200, 1.115 lượt 429):
+
+- **45 lượt mỗi cửa sổ khoảng 5 giây, tính theo IP, gộp mọi route vào một bộ đếm** (kể cả route công
+  khai gọi không token). Không tính theo tài khoản hay token: lúc workstation bị 429 liên tục, `.220`
+  (IP khác, cùng token) gọi 2 lượt/giây vẫn 56/56 lượt 200. Ba bot ở ba IP không chia nhau ngân sách.
+- Vượt nhẹ: hết cửa sổ thì tự mở, không phạt. Bắn mạnh (từ 20 lượt/giây) thì bị khoá kéo dài, mở lại
+  trong vòng 71 giây sau lượt gọi cuối.
+- Body 429: `Whoa! Calm down, cowboy! Quota exceeded`. Không có header rate-limit, không có `Retry-After`.
+- **1 lượt/giây là an toàn**: 14 route, mỗi route 60 giây liên tục, 867/867 lượt 200, p50 0,27 giây.
+  Chủ chốt 14/10: mức này đủ, **đừng đo lại các mức từ 10 lượt/giây trở lên**. BotPasteDon hiện dùng
+  dưới 1 lượt/giây.
+
+**Ghi offer currency** — đo 11/10/2026 (22 lượt 200, 11 lượt 429). BotPasteDon không ghi offer; bảng
+này để bot đạp giá `.199` và item bot `.221` tham khảo. Mọi bộ đếm tính **theo từng offer** và **độc
+lập nhau**:
+
+| Route | Lượt / 600 giây / offer |
+|---|---|
+| Cũ `PUT predefinedOffersUser/me/{id}/changePrice` | 3 |
+| Mới `PUT v1/currency-management/me/offers/{id}/change-price` | 1 |
+| Cũ `PUT predefinedOffersUser/me/{id}/changeQuantity` | 3 |
+| Mới `PUT v1/currency-management/me/offers/{id}/change-quantity` | 1 (cửa sổ chưa đo riêng, giả định 600 giây) |
+
+Đổi giá tăng `offerVersion` thêm 1, đổi số lượng thì không. Body đổi giá
+`{"amount": 0.00801, "currency": "USD"}`; body đổi số lượng là số nguyên trần.
+
+### Bẫy khi gọi
+
+- `GET v1/currency-management/me/offers` phải kèm body JSON (thiếu → 415), ví dụ
+  `{"augmentedGameFilter": {"gameId": "220", "category": "Currency"}, "offerState": "Active"}`.
+  `augmentedGameFilter: {}` trả offer của mọi game; bỏ `offerState` trả mọi trạng thái (Swagger ghi bắt
+  buộc nhưng thực tế không).
+- Credential sai, hết hạn hoặc đã revoke: lệnh xin token trả 401 `Authentication failed.`.
+- Quy định seller: tin nhắn gửi qua API có thể không được tính là phản hồi ban đầu nếu hội thoại không
+  có trao đổi thật, và đơn vẫn có thể bị huỷ
+  (`https://support.eldorado.gg/en/articles/8408997-seller-rules`).
+
+### Trạng thái dùng thật (tới 22/10/2026)
+
+- BotPasteDon `.220` chạy `ELDO_AUTH_MODE=seller_api` từ 14/10/2026 05:24. Đơn thật đầu tiên đi trọn
+  vòng bằng token ngày 15/10 (`19183B38-…`: quét đơn Paid → ERP → `PUT deliver` → bằng chứng và lời
+  nhắn qua TalkJS → `Completed`). Kiểm vận hành 17/10: 0 lượt 401/403/429 do Eldorado; một lần lùi
+  cookie 16/10 14:58–15:02 vì DNS không phân giải được `www.eldorado.gg`.
+- **Đường lùi cookie sắp hết**: profile `chrome_profile_eldo` hết hạn 15/10, `_bak2` đã đăng xuất, chỉ
+  còn `_bak1` tới 04/11/2026 05:17. Sau ngày đó, nếu Seller API lỗi thì auth không còn gì để lùi.
+- Chưa làm: đổi route đơn hàng sang `v1` (Bước 3 của kế hoạch).
+- Chưa đo bằng token: các lệnh `bulk/*`, POST tạo offer họ mới, pause/resume, DELETE offer, quota
+  item-management, trần của `PUT predefinedOffers/{id}/details`, giới hạn đọc dài hạn (theo giờ/ngày).
 
 ---
 
@@ -339,7 +489,9 @@ Pattern (tham khao [auth/main.py](../auth/main.py)):
 
 | File | Vai tro |
 |---|---|
-| [auth/main.py](../auth/main.py) | `EldoAuth`, `G2GAuth`, `_eldo_backend_refresh`, `_g2g_backend_refresh` |
+| [auth/main.py](../auth/main.py) | `EldoAuth`, `G2GAuth`, `_eldo_backend_refresh`, `_g2g_backend_refresh`, `_eldo_seller_token`, `_eldo_seller_probe`, `_eldo_seller_credential_expiry` |
+| [tests/test_eldo_seller_auth.py](../tests/test_eldo_seller_auth.py) | Eldorado gia tren localhost, kiem duong Seller API cua auth (can venv co `requirements.txt`) |
+| [marketplace_chat.md](marketplace_chat.md) | Token va luong chat (TalkJS, Sendbird) |
 | [shared/eldo_auth.py](../shared/eldo_auth.py) | Eldorado auth client (cache JWT + cookies tu auth service) |
 | [shared/g2g_auth.py](../shared/g2g_auth.py) | G2G auth client (cache JWT tu auth service) |
 | [scripts/_sniff_g2g_refresh.py](../scripts/_sniff_g2g_refresh.py) | CDP sniff template |

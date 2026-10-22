@@ -107,6 +107,8 @@ BotPasteDon/
 
 - [docs/architecture.md](docs/architecture.md) — Cau truc du an, module, API flow
 - [docs/operations.md](docs/operations.md) — Huong dan van hanh, troubleshooting, deploy
+- [docs/marketplace_auth.md](docs/marketplace_auth.md) — Xac thuc G2G, Eldorado (cookie + Seller API)
+- [docs/marketplace_chat.md](docs/marketplace_chat.md) — Chat voi nguoi mua: Sendbird (G2G), TalkJS (Eldorado)
 
 ## Dependencies
 
