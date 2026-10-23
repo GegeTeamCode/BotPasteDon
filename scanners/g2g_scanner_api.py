@@ -13,6 +13,7 @@ from functools import partial
 
 from shared.g2g_auth import G2GAuthManager
 from shared.g2g_api import G2GAPIClient, APIError, AuthError
+from shared.api_health import record_g2g_api
 from shared.database import Database
 from shared.logging_config import setup_logger
 from shared.constants import ORDER_EXTRACT_FAILED, ORDER_NEEDS_MANUAL
@@ -65,6 +66,7 @@ class G2GAPIScanner:
             auth = await self.auth_mgr.get_auth()
         except Exception as e:
             logger.error("Auth failed: %s", e)
+            record_g2g_api(False, None, f"auth service: {e}")
             return []
 
         loop = asyncio.get_running_loop()
@@ -74,6 +76,7 @@ class G2GAPIScanner:
             )
         except AuthError as e:
             logger.warning("Auth error: %s — skipping cycle, waiting for fresh JWT", e)
+            record_g2g_api(False, getattr(e, "status", None), str(e))
             return []
         except APIError as e:
             logger.error("API error: %s", e)
@@ -81,6 +84,7 @@ class G2GAPIScanner:
         except Exception as e:
             logger.error("Unexpected: %s", e)
             return []
+        record_g2g_api(True)
 
         result = []
         seen = set()

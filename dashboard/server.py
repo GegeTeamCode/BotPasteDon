@@ -26,6 +26,7 @@ from aiohttp import web, ClientSession, ClientTimeout
 from aiohttp_sse import sse_response
 
 from shared.config import DATABASE_PATH, AUTH_SERVICE_URL, DASHBOARD_PORT
+from shared.api_health import read_g2g_api_health
 from shared.database import Database
 from shared.logging_config import setup_logger
 
@@ -187,7 +188,10 @@ def _build_service_status() -> dict:
         services.append(entry)
 
     services.sort(key=lambda s: (s["tier"], s["name"]))
-    return {"services": services, "stale_count": stale_count}
+    # g2g_api: scanner ghi sau mỗi vòng quét; GeGe Console mở cảnh báo khi
+    # state="failing" và failing_seconds >= alert_after (xem shared/api_health.py).
+    return {"services": services, "stale_count": stale_count,
+            "g2g_api": read_g2g_api_health()}
 
 
 # ── Handlers ──

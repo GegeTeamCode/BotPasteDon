@@ -355,6 +355,29 @@ con KHONG dung lai. Mot instance spin DA xay ra (truoc fix) chi clear duoc bang 
 **Trieu chung**: Scanner mark don delivering roi bi 401 khi fetch detail → don stuck.
 **Fix**: Smart retry — invalidates JWT cache, poll cho JWT moi (120s), retry 1 lan. Da implement trong `g2g_scanner_api.py`.
 
+### G2G API 403 `ForbiddenException` (WAF chan IP)
+
+**Trieu chung** (23/10/2026, ~48 phut): moi lenh G2G co JWT (`list_my_order`, `order/item`,
+`delivered_qty`, `count-my-orders`) tra **403**, header `x-amzn-errortype: ForbiddenException`,
+body `{"message":"Forbidden"}`; auth van `backend refresh OK`, `/health` xanh; API cong khai
+(`offer/search`) tu cung IP van 200. Don moi khong vao ERP, worker ket `RETRY_PENDING` voi
+`AUTH:delivered_qty: auth error HTTP 403`.
+
+**Phan biet chan IP voi phien chet**: lay `curl -s localhost:8010/auth/g2g` tren .220, pipe sang
+may co IP khac roi GET `count-my-orders` voi cung JWT + cookie. 200 o may kia = G2G chan IP .220
+(may khac cung IP cong khai goi API qua nhanh). 403 ca hai noi = phien that su hong.
+
+**Bao dong** (tu commit nay): scanner ghi `data/g2g_api_health.json` sau moi vong quet
+(`shared/api_health.py`); loi lien tuc >= 180s → log `OPS ALERT [g2g-api-auth]` va
+`/api/status` cua dashboard tra `g2g_api.state="failing"` → GeGe Console (.11) mo canh bao do
+`paste_g2g_api`. Het loi tu dong. Truoc commit nay `get_pending_orders` nuot AuthError thanh
+`[]` nen scanner mu im lang.
+
+**Xu ly**: cho G2G tu go (23/10 tu go sau ~48 phut) hoac doi duong ra Internet cua .220 tren
+MikroTik (luat mangle `src 192.168.2.220 → out-pppoe-...`). Sau khi doi duong: ket noi keep-alive
+cu cua worker treo ~15 phut → kiem don `error_message LIKE 'CHAT_PENDING%'`; don ket giao co lich
+o `retry_data.next_retry_at`, don ket nhan khach o `retry_data.chat.next_retry_at` (UTC).
+
 ### Eldorado Auth — backend refresh + session re-login
 
 **Bot dung 2-tier refresh** (Phase 4, 2026-06-08):

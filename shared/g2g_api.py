@@ -163,6 +163,11 @@ class G2GAPIClient:
             logger.warning("list_my_order rate limited (retry_after=%ss) — skipping cycle",
                            getattr(e, "retry_after", "?"))
             return []
+        except AuthError:
+            # AuthError là lớp con của APIError — phải tách ra trước, nếu không
+            # 401/403 bị nuốt thành "không có đơn" và scanner mù im lặng
+            # (23/10/2026: WAF chặn IP .220 ~48 phút mà log không có dòng nào).
+            raise
         except APIError:
             # 4041 = no results (normal when no pending orders)
             return []

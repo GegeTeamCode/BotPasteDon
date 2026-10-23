@@ -7,6 +7,18 @@ mới nhất ở trên cùng.
 
 ## 2026-10-23
 
+- `fix(g2g): bao dong khi G2G tu choi API (403/401), het nuot loi o scanner` —
+  `shared/api_health.py` (moi), `shared/g2g_api.py`, `scanners/g2g_scanner_api.py`, `dashboard/server.py`.
+  - Su co 14:05–14:53: WAF G2G chan IP .220 (403 `ForbiddenException`), `get_pending_orders` bat
+    `except APIError: return []` (AuthError la lop con) → scanner mu khong log; 6 don ket bao giao,
+    5 don moi khong vao ERP. Chu nghi phien tren may khac cung IP scrape don qua nhanh.
+  - Sua: `get_pending_orders` raise AuthError; scanner ghi `data/g2g_api_health.json`; loi lien tuc
+    >= 180s → `OPS ALERT [g2g-api-auth]`; `/api/status` them `g2g_api` cho GeGe Console (canh bao
+    `paste_g2g_api`, sua cung ngay trong repo gege-console).
+  - Verify: `tests/test_g2g_api_health.py` (8 nhom, khong mang) + `tests/test_marketplace_chat.py` xanh;
+    `_build_service_status()` tra `g2g_api` dung voi DB tam.
+  - Doc-sync: `docs/operations.md` muc "G2G API 403 `ForbiddenException` (WAF chan IP)".
+  - Ha tang cung ngay: .220 ra Internet rieng qua VNPT prx17 14.250.79.254 (mangle `*10E`).
 - `fix(eldo): don Aion 2 Kinah vao ERP dung khuon don G2G` — `scanners/eldorado_scanner_api.py`.
   - Don Eldorado Aion 2 dau tien `A11F9438…` vao .100 thanh `SO-261023-R1CG2IBY`: game "Custom Request"
     (muc cuoi cua gameId 360 trong `/library`) → `game_context` NULL, server "Europe", itemName "Kinah",
